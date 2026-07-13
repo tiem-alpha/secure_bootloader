@@ -81,19 +81,19 @@ The STM32F103C8T6 has 64 KiB of internal Flash. Current layout:
 
 | Region | Address range | Size | Purpose |
 | --- | --- | ---: | --- |
-| Boot | `0x08000000` - `0x08003FFF` | 16 KiB | Secure bootloader |
-| App1 | `0x08004000` - `0x08008FFF` | 20 KiB | Application slot 1 |
-| App2 | `0x08009000` - `0x0800DFFF` | 20 KiB | Application slot 2 |
-| Data | `0x0800E000` - `0x0800FFFF` | 8 KiB | Boot status and persistent metadata |
+| Boot | `0x08000000` - `0x08009FFF` | 40 KiB | Secure bootloader |
+| App1 | `0x0800A000` - `0x0800C7FF` | 10 KiB | Application slot 1 |
+| App2 | `0x0800C800` - `0x0800EFFF` | 10 KiB | Application slot 2 |
+| Data | `0x0800F000` - `0x0800FFFF` | 4 KiB | Boot status and persistent metadata |
 
 Each application slot reserves its last 256 bytes for
 `secure_boot_manifest_t`, so the maximum signed image size is
-`20 KiB - 256 B = 20224 B`.
+`10 KiB - 256 B = 9984 B`.
 
 The first two pages in the Data region store redundant boot status records:
 
-- `BOOT_STATUS_PRIMARY_ADDRESS = 0x0800E000`
-- `BOOT_STATUS_BACKUP_ADDRESS  = 0x0800E400`
+- `BOOT_STATUS_PRIMARY_ADDRESS = 0x0800F000`
+- `BOOT_STATUS_BACKUP_ADDRESS  = 0x0800F400`
 
 The bootloader writes these records alternately using `generation + crc32`.
 This reduces the risk of losing boot state if power fails during a status write.
@@ -106,34 +106,34 @@ This reduces the risk of losing boot state if power fails during a status write.
 STM32F103C8T6 Flash: 64 KiB, base 0x08000000, page size 1 KiB
 
 0x08000000  +-------------------------------+
-            | Bootloader                    | 16 KiB
-0x08003FFF  +-------------------------------+
-0x08004000  | App1 image                    |
+            | Bootloader                    | 40 KiB
+0x08009FFF  +-------------------------------+
+0x0800A000  | App1 image                    |
             |                               |
-0x08008F00  | App1 manifest                 | 256 B
-0x08008FFF  +-------------------------------+ 20 KiB total
-0x08009000  | App2 image                    |
+0x0800C700  | App1 manifest                 | 256 B
+0x0800C7FF  +-------------------------------+ 10 KiB total
+0x0800C800  | App2 image                    |
             |                               |
-0x0800DF00  | App2 manifest                 | 256 B
-0x0800DFFF  +-------------------------------+ 20 KiB total
-0x0800E000  | Status primary page           | 1 KiB
-0x0800E400  | Status backup page            | 1 KiB
-0x0800E800  | Reserved persistent data      |
-0x0800FFFF  +-------------------------------+ 8 KiB total
+0x0800EF00  | App2 manifest                 | 256 B
+0x0800EFFF  +-------------------------------+ 10 KiB total
+0x0800F000  | Status primary page           | 1 KiB
+0x0800F400  | Status backup page            | 1 KiB
+0x0800F800  | Reserved persistent data      |
+0x0800FFFF  +-------------------------------+ 4 KiB total
 ```
 
 | Symbol | Address / Size | Description |
 | --- | ---: | --- |
 | `BOOT_FLASH_BASE` | `0x08000000` | Flash base |
-| `BOOT_FLASH_SIZE` | `16 KiB` | Bootloader reserved size |
-| `BOOT_APP1_BASE` | `0x08004000` | App1 vector table address |
-| `BOOT_APP2_BASE` | `0x08009000` | App2 vector table address |
-| `BOOT_APP_SLOT_SIZE` | `20 KiB` | Total size per app slot |
+| `BOOT_FLASH_SIZE` | `40 KiB` | Bootloader reserved size |
+| `BOOT_APP1_BASE` | `0x0800A000` | App1 vector table address |
+| `BOOT_APP2_BASE` | `0x0800C800` | App2 vector table address |
+| `BOOT_APP_SLOT_SIZE` | `10 KiB` | Total size per app slot |
 | `SECURE_BOOT_MANIFEST_SIZE` | `256 B` | Manifest at the end of each slot |
-| `secure_boot_slot_max_image_size()` | `20224 B` | Maximum signed app image size |
-| `BOOT_DATA_BASE` | `0x0800E000` | Boot persistent data region |
-| `BOOT_STATUS_PRIMARY_ADDRESS` | `0x0800E000` | Primary boot status page |
-| `BOOT_STATUS_BACKUP_ADDRESS` | `0x0800E400` | Backup boot status page |
+| `secure_boot_slot_max_image_size()` | `9984 B` | Maximum signed app image size |
+| `BOOT_DATA_BASE` | `0x0800F000` | Boot persistent data region |
+| `BOOT_STATUS_PRIMARY_ADDRESS` | `0x0800F000` | Primary boot status page |
+| `BOOT_STATUS_BACKUP_ADDRESS` | `0x0800F400` | Backup boot status page |
 
 ### Firmware slot layout
 
@@ -508,11 +508,11 @@ Flash the bootloader at `0x08000000`.
 
 The application must link at the start of a slot:
 
-- App1: `0x08004000`
-- App2: `0x08009000`
+- App1: `0x0800A000`
+- App2: `0x0800C800`
 
 The application vector table must be at the slot base. Image size must not
-exceed `secure_boot_slot_max_image_size()` (`20224` bytes).
+exceed `secure_boot_slot_max_image_size()` (`9984` bytes).
 
 ### 4. Sign firmware
 

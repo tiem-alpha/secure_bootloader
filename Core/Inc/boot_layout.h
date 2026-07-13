@@ -13,11 +13,11 @@
 /** Base address of internal Flash. */
 #define BOOT_FLASH_BASE             0x08000000UL
 /** Reserved bootloader Flash size. */
-#define BOOT_FLASH_SIZE             (16UL * 1024UL)
+#define BOOT_FLASH_SIZE             (40UL * 1024UL)
 /** Total size of each application slot, including its manifest. */
-#define BOOT_APP_SLOT_SIZE          (20UL * 1024UL)
+#define BOOT_APP_SLOT_SIZE          (10UL * 1024UL)
 /** Persistent data region size at the end of Flash. */
-#define BOOT_DATA_SIZE              (8UL * 1024UL)
+#define BOOT_DATA_SIZE              (4UL * 1024UL)
 /** Total internal Flash size. */
 #define BOOT_FLASH_SIZE_TOTAL       (64UL * 1024UL)
 /** STM32F103C8T6 Flash erase page size. */

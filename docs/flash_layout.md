@@ -4,14 +4,14 @@ This project targets the 64 KiB STM32F103C8T6 Flash. Every erase page is 1 KiB.
 
 | Region | Address range | Size | Purpose |
 | --- | --- | ---: | --- |
-| Boot | `0x08000000` - `0x08003FFF` | 16 KiB | Secure bootloader |
-| App1 | `0x08004000` - `0x08008FFF` | 20 KiB | Application slot 1 |
-| App2 | `0x08009000` - `0x0800DFFF` | 20 KiB | Application slot 2 |
-| Data | `0x0800E000` - `0x0800FFFF` | 8 KiB | Boot state and future persistent data |
+| Boot | `0x08000000` - `0x08009FFF` | 40 KiB | Secure bootloader |
+| App1 | `0x0800A000` - `0x0800C7FF` | 10 KiB | Application slot 1 |
+| App2 | `0x0800C800` - `0x0800EFFF` | 10 KiB | Application slot 2 |
+| Data | `0x0800F000` - `0x0800FFFF` | 4 KiB | Boot state and future persistent data |
 
 Each application must link its vector table at the beginning of its slot. The last
 256 bytes of the slot contain `secure_boot_manifest_t`, so application code is
-limited to 20,224 bytes.
+limited to 9,984 bytes.
 
 The manifest is signed as raw bytes from offset 0 through the byte before
 `signature`; the signature format is ECDSA P-256 `r || s` (64 bytes), and the

@@ -45,22 +45,31 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/main.c
-    Core/Src/crc16.c
-    Core/Src/log.c
-    Core/Src/SEGGER_RTT.c
-    Core/Src/my_packer.c
-    Core/Src/packer.c
-    Core/Src/comm_manager.c
-    Core/Src/sha256.c
-    Core/Src/my_com_protocol.c
-    Core/Src/crypto_util.c
-    Core/Src/ecdsa_p256.c
+    Core/Src/com/crc16.c
+    Core/Src/log/log.c
+    Core/Src/log/SEGGER_RTT.c
+    Core/Src/com/my_packer.c
+    Core/Src/com/packer.c
+    Core/Src/com/comm_manager.c
+    Core/Src/com/my_queue.c
+    Core/Src/secure/sha256.c
+    Core/Src/secure/crypto_util.c
+    Core/Src/secure/crypto_manager.c
+    Core/Src/secure/ecdsa_p256.c
+    Core/Src/secure_boot.c
+    Core/Src/secure/secure_boot_public_key.c
+    Core/Src/com/boot_uart_protocol.c
+    Core/Src/flash/boot_flash.c
+    Core/Src/boot_controller.c
     # Add user sources here
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Inc
+    Core/Inc/com
+    Core/Inc/secure
+    Core/Inc/log
     # Add user defined include paths
 )
 

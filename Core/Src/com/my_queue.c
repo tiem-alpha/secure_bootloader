@@ -20,7 +20,10 @@
 
 uint8_t queue_init(queue *mQueue,  uint16_t size)
 {
-
+  if (mQueue == NULL || size < 2U)
+  {
+    return 1;
+  }
   mQueue->_buffer = (uint8_t*)calloc(size,1);
   if (mQueue->_buffer == NULL)
    {
@@ -48,6 +51,10 @@ uint8_t queue_pop_byte(queue *mQueue, uint8_t *byte) // run on main
 
 uint16_t queue_pop(queue *mQueue, uint8_t *buffer, uint16_t length)
 {
+  if (mQueue == NULL || buffer == NULL)
+  {
+    return 0U;
+  }
   uint16_t dataLength = queue_get_data_length(mQueue);
   // if (dataLength == 0)
   // {
@@ -75,9 +82,13 @@ uint8_t queue_push_byte(queue *mQueue, uint8_t value)
   return QUEUE_SUCCESS;
 }
 
-uint16_t queue_push(queue *mQueue, uint8_t *buff, uint16_t length)
+uint16_t queue_push(queue *mQueue, const uint8_t *buff, uint16_t length)
 {
   uint16_t i = 0;
+  if (mQueue == NULL || buff == NULL)
+  {
+    return 0U;
+  }
   for (i = 0; i < length; i++)
   {
     if (queue_push_byte(mQueue, buff[i]) == QUEUE_FULL)
@@ -86,6 +97,43 @@ uint16_t queue_push(queue *mQueue, uint8_t *buff, uint16_t length)
     }
   }
   return i;
+}
+
+uint16_t queue_peek_data(const queue *mQueue, uint8_t *buffer, uint16_t length)
+{
+  uint16_t available;
+  uint16_t index;
+  uint16_t i;
+
+  if (mQueue == NULL || buffer == NULL)
+  {
+    return 0U;
+  }
+
+  available = (mQueue->_tail + mQueue->_size - mQueue->_head) % mQueue->_size;
+  available = available < length ? available : length;
+  index = mQueue->_head;
+  for (i = 0U; i < available; ++i)
+  {
+    buffer[i] = mQueue->_buffer[index];
+    index = (index + 1U) % mQueue->_size;
+  }
+  return available;
+}
+
+uint16_t queue_discard(queue *mQueue, uint16_t length)
+{
+  uint16_t available;
+
+  if (mQueue == NULL)
+  {
+    return 0U;
+  }
+
+  available = queue_get_data_length(mQueue);
+  available = available < length ? available : length;
+  mQueue->_head = (mQueue->_head + available) % mQueue->_size;
+  return available;
 }
 
 uint8_t queue_peek(queue *mQueue, uint8_t *value)
@@ -128,10 +176,15 @@ uint16_t queue_get_data_length(queue *mQueue)
 
 uint8_t queue_deinit(queue *mQueue)
 {
-	 if (mQueue->_buffer == NULL)
+	 if (mQueue == NULL || mQueue->_buffer == NULL)
 	   {
 	     return 1;
 	   }
 	 free(mQueue->_buffer);
+	 mQueue->_buffer = NULL;
+	 mQueue->_size = 0U;
+	 mQueue->_head = 0U;
+	 mQueue->_tail = 0U;
+	 mQueue->_overwrite = 0U;
 	 return 0;
 }

@@ -21,12 +21,10 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "ecdsa_p256.h"
+#include "boot_controller.h"
 #include "log.h"
-#include "sha256.h"
 #include "comm_manager.h"
-#include"my_packer.h"
-#include <string.h>
+#include "my_packer.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -51,9 +49,11 @@ WWDG_HandleTypeDef hwwdg;
 
 /* USER CODE BEGIN PV */
 CommManager_t uart1Com;
+boot_controller_t bootController;
+static uint8_t receiveByte;
 Packer_t uartPacker = {
-		.pack = my_pack_data,
-		.unpack = my_unpack_data_state,
+    .pack = my_pack_data,
+    .unpack = my_unpack_data_state,
 };
 
 /* USER CODE END PV */
@@ -70,21 +70,11 @@ static void MX_USART1_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-static void log_hex(const uint8_t *data, size_t data_len)
-{
-  size_t i;
-
-  for (i = 0; i < data_len; i++)
-  {
-    log_printf("%02x ", data[i]);
-  }
-}
-
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART1)
   {
-    onReceiveData(&uart1Com,&receiveByte,1);
+    onReceiveData(&uart1Com, &receiveByte, 1U);
 //    GPIOC->BSRR = (1 << 13);
     HAL_UART_Receive_IT(&huart1, (uint8_t *)&receiveByte, 1); // doi nhạn doc 1 byte
   }
@@ -98,23 +88,19 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
   }
 }
 
-void uart_send(uint8_t *buff, uint16_t length)
+static bool uart_send(const uint8_t *buff, uint16_t length)
 {
-  HAL_UART_Transmit_IT(&huart1, (const uint8_t *)buff, length);
+  return HAL_UART_Transmit_IT(&huart1, buff, length) == HAL_OK;
 }
 
-void receive_callback(uint8_t *data, uint16_t length)
+static void receive_callback(uint8_t *data, uint16_t length)
 {
-  total_payload += length;
-  total_packet += 1;
-  log_printf("nhan duoc %lu byte: total byte %lu\n", total_payload, total_packet);
-  u32_to_str(total_payload, (char *)buffer, sizeof(buffer));
-  comm_manager_send_data(&uart1Com,data,length);
+  boot_controller_on_packet(&bootController, data, length);
 }
 
-void receive_fail_callback(uint8_t error)
+static void receive_fail_callback(uint8_t error)
 {
-  log_println("nhan that bai");
+  boot_controller_on_parser_error(&bootController, error);
 }
 
 // static void sha256_test(void)
@@ -172,8 +158,16 @@ int main(void)
   MX_USART1_UART_Init();
   // MX_WWDG_Init();
   /* USER CODE BEGIN 2 */
-  comm_manager_init(&uart1Com, &uartPacker, receive_callback, receive_fail_callback, uart_send);
-  HAL_UART_Receive_IT(&huart1, (uint8_t *)&receiveByte, 1);
+  if (comm_manager_init(&uart1Com, &uartPacker, receive_callback,
+                        receive_fail_callback, uart_send) != COMM_MANAGER_SUCCESS)
+  {
+    Error_Handler();
+  }
+  boot_controller_init(&bootController, &uart1Com);
+  if (HAL_UART_Receive_IT(&huart1, &receiveByte, 1U) != HAL_OK)
+  {
+    Error_Handler();
+  }
 
   /* USER CODE END 2 */
 
@@ -183,6 +177,7 @@ int main(void)
   {
     /* USER CODE END WHILE */
     comm_control(&uart1Com);
+    boot_controller_poll(&bootController);
     /* USER CODE BEGIN 3 */
     // HAL_WWDG_Refresh(&hwwdg);
   }

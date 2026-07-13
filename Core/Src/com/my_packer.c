@@ -6,15 +6,17 @@
 #include "my_packer.h"
 #include "data_type.h"
 #include "packer.h"
+#include "com_config.h"
     // Define protocol version
 
 #define PACKER_START_BYTE 0xAC
 #define PACKER_END_BYTE 0xBB
-#define PACKER_MAX_PAYLOAD_SIZE 1024
+#define PACKER_MAX_PAYLOAD_SIZE COM_MAX_PAYLOAD_SIZE
 #define PACKER_MIN_PAYLOAD_SIZE 1
 #define PACKER_CHECKSUM_SIZE 2
-#define PACKER_HEADER_SIZE 2 // Start byte +CRC (2 bytes) + END byte
-#define PACKER_MAX_MESSAGE_LENTH (PACKER_HEADER_SIZE + PACKER_MAX_PAYLOAD_SIZE + PACKER_CHECKSUM_SIZE)
+#define PACKER_HEADER_SIZE 3 /* Start byte + payload length (two bytes). */
+#define PACKER_FRAME_OVERHEAD (PACKER_HEADER_SIZE + PACKER_CHECKSUM_SIZE + 1U)
+#define PACKER_MAX_MESSAGE_LENGTH (PACKER_FRAME_OVERHEAD + PACKER_MAX_PAYLOAD_SIZE)
 
     enum STATE_PARSE
     {
@@ -41,9 +43,13 @@
 
 uint8_t my_pack_data(const uint8_t *data, uint16_t length, uint8_t *buffer_out, uint16_t size_out, uint16_t *packed_length)
 {
-    memset(buffer_out, 0, size_out);
     uint16_t crc = 0;
-    if (length < PACKER_MIN_PAYLOAD_SIZE || length > PACKER_MAX_PAYLOAD_SIZE || length > size_out + PACKER_HEADER_SIZE + PACKER_CHECKSUM_SIZE)
+    if (packed_length == NULL || buffer_out == NULL || data == NULL) {
+        return PARSER_ERROR_LENGTH_OUT_OF_BOUNDS;
+    }
+    *packed_length = 0U;
+    if (length < PACKER_MIN_PAYLOAD_SIZE || length > PACKER_MAX_PAYLOAD_SIZE ||
+        (uint32_t)length + PACKER_FRAME_OVERHEAD > size_out)
     {
         log_print( "Error: Data length out of bounds.\n");
         return PARSER_ERROR_LENGTH_OUT_OF_BOUNDS; // Error: Data length out of bounds
@@ -75,12 +81,13 @@ uint8_t my_pack_data(const uint8_t *data, uint16_t length, uint8_t *buffer_out, 
     return PARSER_SUCCESS; // Return total length of packed data
 }
 
-uint8_t my_unpack_data(char *buffer, uint16_t buffer_length, uint8_t *buffer_out, uint16_t size_out)
+uint8_t my_unpack_data(const uint8_t *buffer, uint16_t buffer_length, uint8_t *buffer_out, uint16_t size_out)
 {
     // Simulate receiving data
     uint16_t crc = 0;
     uint16_t i = 0;
-    if (buffer_length < PACKER_HEADER_SIZE + PACKER_CHECKSUM_SIZE + PACKER_MIN_PAYLOAD_SIZE)
+    if (buffer == NULL || buffer_out == NULL ||
+        buffer_length < PACKER_FRAME_OVERHEAD + PACKER_MIN_PAYLOAD_SIZE)
     {
         log_print( "Error: Buffer length too small.\n");
         return PARSER_ERROR_LENGTH_OUT_OF_BOUNDS; // Error: Buffer length too small
@@ -92,13 +99,15 @@ uint8_t my_unpack_data(char *buffer, uint16_t buffer_length, uint8_t *buffer_out
         return PARSER_ERROR_INVALID_START_BYTE; // Error: Invalid start byte
     }
     i++;
+    crc16_init(&crc);
     uint16_t length = ((uint16_t)buffer[i] << 8);
     crc16_byte_cal(&crc, buffer[i]);
     i++;
     length |= (uint16_t)buffer[i];
     crc16_byte_cal(&crc, buffer[i]);
     i++;
-    if (length < PACKER_MIN_PAYLOAD_SIZE || length > PACKER_MAX_PAYLOAD_SIZE || length > size_out)
+    if (length < PACKER_MIN_PAYLOAD_SIZE || length > PACKER_MAX_PAYLOAD_SIZE ||
+        length > size_out || (uint32_t)length + PACKER_FRAME_OVERHEAD > buffer_length)
     {
         log_print( "Error: Payload length out of bounds.\n");
         return PARSER_ERROR_LENGTH_OUT_OF_BOUNDS; // Error: Payload length out of bounds
@@ -127,7 +136,7 @@ uint8_t my_unpack_data(char *buffer, uint16_t buffer_length, uint8_t *buffer_out
     return PARSER_SUCCESS; // Return number of bytes received
 }
 
-uint8_t my_unpack_data_state(uint8_t byte, uint8_t *buffer_out, uint16_t *offset, uint16_t *length, uint16_t size_out, uint16_t *crc, uint8_t *state)
+uint8_t my_unpack_data_state(uint8_t byte, uint8_t *buffer_out, uint16_t *offset, uint16_t *length, uint16_t size_out, uint16_t *crc, uint16_t *state)
 {
     uint8_t ret = PARSER_RUNNING;
     switch (*state)
@@ -140,9 +149,6 @@ uint8_t my_unpack_data_state(uint8_t byte, uint8_t *buffer_out, uint16_t *offset
         {
             *state = READ_LENGTH_HIGH;
             crc16_init(crc); // Initialize CRC
-        }
-        else{
-            ret = PARSER_ERROR_INVALID_START_BYTE;
         }
         break;
 

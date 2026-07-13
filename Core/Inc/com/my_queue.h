@@ -34,12 +34,15 @@ uint8_t queue_init(queue * mQueue, uint16_t size);
 uint16_t queue_pop(queue * mQueue, uint8_t *buffer, uint16_t length);
 uint8_t queue_pop_byte(queue * mQueue, uint8_t *byte);
 uint8_t queue_push_byte(queue * mQueue, uint8_t value);
-uint16_t queue_push(queue * mQueue, uint8_t *buff, uint16_t length);
+uint16_t queue_push(queue * mQueue, const uint8_t *buff, uint16_t length);
 uint8_t queue_peek(queue *mQueue, uint8_t *value);
+uint16_t queue_peek_data(const queue *mQueue, uint8_t *buffer, uint16_t length);
+uint16_t queue_discard(queue *mQueue, uint16_t length);
 bool queue_is_full(queue * mQueue);
 bool queue_is_empty(queue * mQueue);
 uint16_t queue_get_space(queue * mQueue);
 uint16_t queue_get_data_length(queue *mQueue);
+uint8_t queue_deinit(queue *mQueue);
 
 
 #ifdef __cplusplus

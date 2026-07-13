@@ -91,7 +91,8 @@ typedef struct {
 /**
  * @brief Read a 32-bit little-endian value from a byte buffer.
  *
- * @param data Pointer to at least 4 bytes.
+ * @param[in] data Pointer to at least 4 bytes.
+ *
  * @return Decoded unsigned 32-bit value.
  */
 uint32_t boot_uart_read_u32_le(const uint8_t *data);
@@ -99,18 +100,22 @@ uint32_t boot_uart_read_u32_le(const uint8_t *data);
 /**
  * @brief Write a 32-bit little-endian value to a byte buffer.
  *
- * @param data Pointer to at least 4 writable bytes.
- * @param value Value to encode.
+ * @param[out] data Pointer to at least 4 writable bytes.
+ * @param[in] value Value to encode.
  */
 void boot_uart_write_u32_le(uint8_t *data, uint32_t value);
 
 /**
  * @brief Parse and validate an UPDATE_BEGIN payload.
  *
- * @param payload Unframed payload starting with BOOT_UART_COMMAND_UPDATE_BEGIN.
- * @param length Payload length.
- * @param request Output parsed request.
+ * @param[in] payload Unframed payload starting with
+ *                     BOOT_UART_COMMAND_UPDATE_BEGIN.
+ * @param[in] length Payload length.
+ * @param[out] request Output parsed request.
+ *
  * @return true when the payload shape is valid.
+ * @return false when an argument is NULL, command byte mismatches, or length is
+ *         not @ref BOOT_UART_UPDATE_BEGIN_SIZE.
  */
 bool boot_uart_parse_update_begin(const uint8_t *payload, uint16_t length,
                                   boot_uart_update_begin_t *request);
@@ -118,10 +123,14 @@ bool boot_uart_parse_update_begin(const uint8_t *payload, uint16_t length,
 /**
  * @brief Parse and validate an UPDATE_CHUNK payload.
  *
- * @param payload Unframed payload starting with BOOT_UART_COMMAND_UPDATE_CHUNK.
- * @param length Payload length.
- * @param request Output parsed request.
+ * @param[in] payload Unframed payload starting with
+ *                     BOOT_UART_COMMAND_UPDATE_CHUNK.
+ * @param[in] length Payload length.
+ * @param[out] request Output parsed request.
+ *
  * @return true when the payload shape is valid.
+ * @return false when an argument is NULL, command byte mismatches, or payload
+ *         is shorter than the chunk header.
  */
 bool boot_uart_parse_update_chunk(const uint8_t *payload, uint16_t length,
                                   boot_uart_update_chunk_t *request);
@@ -129,10 +138,13 @@ bool boot_uart_parse_update_chunk(const uint8_t *payload, uint16_t length,
 /**
  * @brief Parse and validate an UPDATE_END payload.
  *
- * @param payload Unframed payload starting with BOOT_UART_COMMAND_UPDATE_END.
- * @param length Payload length.
- * @param slot Output target slot.
+ * @param[in] payload Unframed payload starting with BOOT_UART_COMMAND_UPDATE_END.
+ * @param[in] length Payload length.
+ * @param[out] slot Output target slot.
+ *
  * @return true when the payload shape is valid.
+ * @return false when an argument is NULL, command byte mismatches, or length is
+ *         not @ref BOOT_UART_UPDATE_END_SIZE.
  */
 bool boot_uart_parse_update_end(const uint8_t *payload, uint16_t length,
                                 secure_boot_slot_t *slot);
@@ -142,11 +154,14 @@ bool boot_uart_parse_update_end(const uint8_t *payload, uint16_t length,
  *
  * Used by VERIFY_SLOT and CONFIRM_SLOT.
  *
- * @param payload Unframed command payload.
- * @param length Payload length.
- * @param command Expected command byte.
- * @param slot Output slot.
+ * @param[in] payload Unframed command payload.
+ * @param[in] length Payload length.
+ * @param[in] command Expected command byte.
+ * @param[out] slot Output slot.
+ *
  * @return true when command and length match.
+ * @return false when an argument is NULL, command byte mismatches, or length is
+ *         not 2.
  */
 bool boot_uart_parse_slot_command(const uint8_t *payload, uint16_t length,
                                   uint8_t command, secure_boot_slot_t *slot);
@@ -154,19 +169,21 @@ bool boot_uart_parse_slot_command(const uint8_t *payload, uint16_t length,
 /**
  * @brief Build a fixed-size bootloader report payload.
  *
- * @param payload Output buffer.
- * @param capacity Output buffer capacity.
- * @param report Report type byte.
- * @param command Command associated with the report.
- * @param controller_state Current boot_controller_state_t value.
- * @param result secure_boot_result_t value to report.
- * @param status Current secure boot persistent status.
- * @param target_slot Slot related to this report.
- * @param received_image_size Number of image bytes received.
- * @param expected_image_size Expected total image size.
- * @param image_version Current image version.
- * @param length_out Output payload length, always BOOT_UART_REPORT_SIZE.
+ * @param[out] payload Output buffer.
+ * @param[in] capacity Output buffer capacity.
+ * @param[in] report Report type byte.
+ * @param[in] command Command associated with the report.
+ * @param[in] controller_state Current boot_controller_state_t value.
+ * @param[in] result secure_boot_result_t value to report.
+ * @param[in] status Current secure boot persistent status.
+ * @param[in] target_slot Slot related to this report.
+ * @param[in] received_image_size Number of image bytes received.
+ * @param[in] expected_image_size Expected total image size.
+ * @param[in] image_version Current image version.
+ * @param[out] length_out Output payload length, always BOOT_UART_REPORT_SIZE.
+ *
  * @return true when the report was built.
+ * @return false when arguments are NULL or capacity is too small.
  */
 bool boot_uart_build_report(uint8_t *payload, uint16_t capacity, uint8_t report,
                             uint8_t command, uint8_t controller_state,

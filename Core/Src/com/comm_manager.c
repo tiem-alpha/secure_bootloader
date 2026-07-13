@@ -6,6 +6,15 @@
 #include "com_config.h"
 #include "log.h"
 
+/**
+ * @brief Release all heap buffers and reset a communication manager.
+ *
+ * @param[in,out] comm_manager Communication manager to release. NULL is
+ *                             accepted and ignored.
+ *
+ * @post Allocated TX/RX buffers and queues are released.
+ * @post The context memory is cleared.
+ */
 static void comm_manager_release(CommManager_t *comm_manager)
 {
     if (comm_manager == NULL) {
@@ -20,6 +29,7 @@ static void comm_manager_release(CommManager_t *comm_manager)
     memset(comm_manager, 0, sizeof(*comm_manager));
 }
 
+/** @copydoc comm_manager_init */
 uint8_t comm_manager_init(CommManager_t *comm_manager, Packer_t *packer,
                           process_msg_success_cb on_receive_success,
                           parser_fail_cb on_receive_fail,
@@ -51,11 +61,13 @@ uint8_t comm_manager_init(CommManager_t *comm_manager, Packer_t *packer,
     return COMM_MANAGER_SUCCESS;
 }
 
+/** @copydoc comm_manager_deinit */
 void comm_manager_deinit(CommManager_t *comm_manager)
 {
     comm_manager_release(comm_manager);
 }
 
+/** @copydoc onReceiveData */
 void onReceiveData(CommManager_t *comm_manager, const uint8_t *data,
                    uint16_t length)
 {
@@ -70,6 +82,7 @@ void onReceiveData(CommManager_t *comm_manager, const uint8_t *data,
     }
 }
 
+/** @copydoc comm_manager_send_data */
 bool comm_manager_send_data(CommManager_t *comm_manager, const uint8_t *data,
                             uint16_t length)
 {
@@ -90,10 +103,15 @@ bool comm_manager_send_data(CommManager_t *comm_manager, const uint8_t *data,
                    comm_manager->comm_tx_pack_buffer, send_length) != send_length) {
         return false;
     }
-
+    // log_printf("UART  %u bytes.\r\n", send_length);
+    // for(uint16_t i = 0U; i < send_length; ++i) {
+    //     log_printf("%02X ", comm_manager->comm_tx_pack_buffer[i]);
+    // }
+    // log_printf("\r\n");
     return true;
 }
 
+/** @copydoc comm_manager_tx_idle */
 bool comm_manager_tx_idle(CommManager_t *comm_manager)
 {
     if (comm_manager == NULL) {
@@ -104,6 +122,7 @@ bool comm_manager_tx_idle(CommManager_t *comm_manager)
            queue_get_data_length(&comm_manager->comm_tx_queue) == 0U;
 }
 
+/** @copydoc comm_control */
 void comm_control(CommManager_t *comm_manager)
 {
     uint8_t comm_rx[64];
@@ -160,6 +179,7 @@ void comm_control(CommManager_t *comm_manager)
     }
 }
 
+/** @copydoc onSendDone */
 void onSendDone(CommManager_t *comm_manager)
 {
     if (comm_manager != NULL) {

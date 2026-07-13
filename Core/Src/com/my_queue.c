@@ -18,6 +18,7 @@
 /// queue is full when tail+1 % size = head
 // queue is empty when head == tail
 
+/** @copydoc queue_init */
 uint8_t queue_init(queue *mQueue,  uint16_t size)
 {
   if (mQueue == NULL || size < 2U)
@@ -35,6 +36,7 @@ uint8_t queue_init(queue *mQueue,  uint16_t size)
   return 0;
 }
 
+/** @copydoc queue_pop_byte */
 uint8_t queue_pop_byte(queue *mQueue, uint8_t *byte) // run on main
 {
   if (mQueue->_head == mQueue->_tail)
@@ -49,6 +51,7 @@ uint8_t queue_pop_byte(queue *mQueue, uint8_t *byte) // run on main
   return QUEUE_SUCCESS;
 }
 
+/** @copydoc queue_pop */
 uint16_t queue_pop(queue *mQueue, uint8_t *buffer, uint16_t length)
 {
   if (mQueue == NULL || buffer == NULL)
@@ -70,6 +73,7 @@ uint16_t queue_pop(queue *mQueue, uint8_t *buffer, uint16_t length)
   return dataLength;
 }
 
+/** @copydoc queue_push_byte */
 uint8_t queue_push_byte(queue *mQueue, uint8_t value)
 {
   if ((mQueue->_tail + 1) % mQueue->_size == mQueue->_head)
@@ -82,6 +86,7 @@ uint8_t queue_push_byte(queue *mQueue, uint8_t value)
   return QUEUE_SUCCESS;
 }
 
+/** @copydoc queue_push */
 uint16_t queue_push(queue *mQueue, const uint8_t *buff, uint16_t length)
 {
   uint16_t i = 0;
@@ -99,6 +104,7 @@ uint16_t queue_push(queue *mQueue, const uint8_t *buff, uint16_t length)
   return i;
 }
 
+/** @copydoc queue_peek_data */
 uint16_t queue_peek_data(const queue *mQueue, uint8_t *buffer, uint16_t length)
 {
   uint16_t available;
@@ -121,6 +127,7 @@ uint16_t queue_peek_data(const queue *mQueue, uint8_t *buffer, uint16_t length)
   return available;
 }
 
+/** @copydoc queue_discard */
 uint16_t queue_discard(queue *mQueue, uint16_t length)
 {
   uint16_t available;
@@ -136,6 +143,7 @@ uint16_t queue_discard(queue *mQueue, uint16_t length)
   return available;
 }
 
+/** @copydoc queue_peek */
 uint8_t queue_peek(queue *mQueue, uint8_t *value)
 {
   if (queue_is_empty(mQueue))
@@ -146,6 +154,7 @@ uint8_t queue_peek(queue *mQueue, uint8_t *value)
   return QUEUE_SUCCESS;
 }
 
+/** @copydoc queue_is_full */
 bool queue_is_full(queue *mQueue)
 {
   if ((mQueue->_tail + 1) % mQueue->_size == mQueue->_head)
@@ -155,6 +164,7 @@ bool queue_is_full(queue *mQueue)
   return false;
 }
 
+/** @copydoc queue_is_empty */
 bool queue_is_empty(queue *mQueue)
 {
   if (mQueue->_head == mQueue->_tail)
@@ -164,16 +174,19 @@ bool queue_is_empty(queue *mQueue)
   return false;
 }
 
+/** @copydoc queue_get_space */
 uint16_t queue_get_space(queue *mQueue)
 {
   return mQueue->_size - 1 - (mQueue->_tail + mQueue->_size + -mQueue->_head) % mQueue->_size;
 }
 
+/** @copydoc queue_get_data_length */
 uint16_t queue_get_data_length(queue *mQueue)
 {
   return (mQueue->_tail + mQueue->_size + -mQueue->_head) % mQueue->_size;
 }
 
+/** @copydoc queue_deinit */
 uint8_t queue_deinit(queue *mQueue)
 {
 	 if (mQueue == NULL || mQueue->_buffer == NULL)

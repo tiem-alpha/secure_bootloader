@@ -150,7 +150,8 @@ extern const uint8_t secure_boot_public_key[ECDSA_P256_PUBLIC_KEY_SIZE];
 /**
  * @brief Get the Flash base address for an application slot.
  *
- * @param slot Slot identifier.
+ * @param[in] slot Slot identifier.
+ *
  * @return Slot base address, or 0 for SECURE_BOOT_SLOT_NONE/invalid slots.
  */
 uint32_t secure_boot_slot_base(secure_boot_slot_t slot);
@@ -167,7 +168,8 @@ uint32_t secure_boot_slot_max_image_size(void);
 /**
  * @brief Get the manifest address for a slot.
  *
- * @param slot Slot identifier.
+ * @param[in] slot Slot identifier.
+ *
  * @return Pointer to the slot manifest in Flash, or NULL for invalid slots.
  */
 const secure_boot_manifest_t *secure_boot_manifest_for_slot(secure_boot_slot_t slot);
@@ -178,8 +180,9 @@ const secure_boot_manifest_t *secure_boot_manifest_for_slot(secure_boot_slot_t s
  * Verification includes slot validity, manifest format, vector table sanity,
  * image SHA-256, public key provisioning, and ECDSA P-256 signature check.
  *
- * @param slot Slot to verify.
- * @param manifest_out Optional output pointer for the verified manifest.
+ * @param[in] slot Slot to verify.
+ * @param[out] manifest_out Optional output pointer for the verified manifest.
+ *
  * @return SECURE_BOOT_OK if the slot is valid and authenticated.
  */
 secure_boot_result_t secure_boot_verify_slot(secure_boot_slot_t slot,
@@ -190,7 +193,8 @@ secure_boot_result_t secure_boot_verify_slot(secure_boot_slot_t slot,
  *
  * If both status copies are invalid, a default in-RAM status is returned.
  *
- * @param status Output status structure.
+ * @param[out] status Output status structure.
+ *
  * @return SECURE_BOOT_OK, or SECURE_BOOT_ERROR_ARGUMENT for NULL output.
  */
 secure_boot_result_t secure_boot_get_status(secure_boot_status_t *status);
@@ -211,7 +215,8 @@ secure_boot_result_t secure_boot_recover_interrupted_update(void);
  *
  * This marker allows the next boot to detect power loss during FOTA.
  *
- * @param slot Slot about to be erased and updated.
+ * @param[in] slot Slot about to be erased and updated.
+ *
  * @return SECURE_BOOT_OK on successful status persistence.
  */
 secure_boot_result_t secure_boot_begin_update(secure_boot_slot_t slot);
@@ -231,7 +236,8 @@ secure_boot_result_t secure_boot_abort_update(void);
  * The slot is verified again and checked against rollback policy before the
  * persistent status is updated.
  *
- * @param slot Verified slot to boot once in trial mode.
+ * @param[in] slot Verified slot to boot once in trial mode.
+ *
  * @return SECURE_BOOT_OK if trial state was persisted.
  */
 secure_boot_result_t secure_boot_request_trial(secure_boot_slot_t slot);
@@ -241,7 +247,8 @@ secure_boot_result_t secure_boot_request_trial(secure_boot_slot_t slot);
  *
  * The application should call this after its own startup self-tests pass.
  *
- * @param slot Running slot to confirm.
+ * @param[in] slot Running slot to confirm.
+ *
  * @return SECURE_BOOT_OK if confirmation was persisted.
  */
 secure_boot_result_t secure_boot_confirm_running_image(secure_boot_slot_t slot);

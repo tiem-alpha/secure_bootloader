@@ -5,6 +5,20 @@
 #include "boot_layout.h"
 #include "stm32f1xx_hal.h"
 
+/**
+ * @brief Program one STM32F1 Flash half-word.
+ *
+ * @details
+ * Unlocks Flash, programs one 16-bit value, then locks Flash again regardless
+ * of success or failure.
+ *
+ * @param[in] address Absolute Flash address to program. Must be half-word
+ *                    aligned and already erased.
+ * @param[in] value Half-word value to write.
+ *
+ * @return true when HAL unlock/program sequence succeeds.
+ * @return false when unlock or program fails.
+ */
 static bool boot_flash_program_half_word(uint32_t address, uint16_t value)
 {
     HAL_StatusTypeDef result;
@@ -17,6 +31,7 @@ static bool boot_flash_program_half_word(uint32_t address, uint16_t value)
     return result == HAL_OK;
 }
 
+/** @copydoc boot_flash_erase_slot */
 bool boot_flash_erase_slot(secure_boot_slot_t slot)
 {
     FLASH_EraseInitTypeDef erase = {0};
@@ -34,6 +49,7 @@ bool boot_flash_erase_slot(secure_boot_slot_t slot)
     return result == HAL_OK;
 }
 
+/** @copydoc boot_flash_write_status_page */
 bool boot_flash_write_status_page(uint32_t page_address,
                                   const secure_boot_status_t *status)
 {
@@ -69,6 +85,7 @@ bool boot_flash_write_status_page(uint32_t page_address,
     return result == HAL_OK;
 }
 
+/** @copydoc boot_flash_writer_reset */
 void boot_flash_writer_reset(boot_flash_writer_t *writer)
 {
     if (writer == NULL) {
@@ -79,6 +96,7 @@ void boot_flash_writer_reset(boot_flash_writer_t *writer)
     writer->slot = SECURE_BOOT_SLOT_NONE;
 }
 
+/** @copydoc boot_flash_writer_begin */
 void boot_flash_writer_begin(boot_flash_writer_t *writer, secure_boot_slot_t slot)
 {
     if (writer == NULL) {
@@ -89,6 +107,7 @@ void boot_flash_writer_begin(boot_flash_writer_t *writer, secure_boot_slot_t slo
     writer->slot = slot;
 }
 
+/** @copydoc boot_flash_writer_write */
 bool boot_flash_writer_write(boot_flash_writer_t *writer, const uint8_t *data,
                              uint16_t length)
 {
@@ -131,6 +150,7 @@ bool boot_flash_writer_write(boot_flash_writer_t *writer, const uint8_t *data,
     return true;
 }
 
+/** @copydoc boot_flash_writer_flush */
 bool boot_flash_writer_flush(boot_flash_writer_t *writer)
 {
     uint32_t address;
@@ -152,6 +172,7 @@ bool boot_flash_writer_flush(boot_flash_writer_t *writer)
     return true;
 }
 
+/** @copydoc boot_flash_write_manifest */
 bool boot_flash_write_manifest(secure_boot_slot_t slot,
                                const secure_boot_manifest_t *manifest)
 {

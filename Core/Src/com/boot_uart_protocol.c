@@ -2,12 +2,14 @@
 
 #include <stddef.h>
 
+/** @copydoc boot_uart_read_u32_le */
 uint32_t boot_uart_read_u32_le(const uint8_t *data)
 {
     return (uint32_t)data[0] | ((uint32_t)data[1] << 8U) |
            ((uint32_t)data[2] << 16U) | ((uint32_t)data[3] << 24U);
 }
 
+/** @copydoc boot_uart_write_u32_le */
 void boot_uart_write_u32_le(uint8_t *data, uint32_t value)
 {
     data[0] = (uint8_t)value;
@@ -16,6 +18,7 @@ void boot_uart_write_u32_le(uint8_t *data, uint32_t value)
     data[3] = (uint8_t)(value >> 24U);
 }
 
+/** @copydoc boot_uart_parse_update_begin */
 bool boot_uart_parse_update_begin(const uint8_t *payload, uint16_t length,
                                   boot_uart_update_begin_t *request)
 {
@@ -33,6 +36,7 @@ bool boot_uart_parse_update_begin(const uint8_t *payload, uint16_t length,
     return true;
 }
 
+/** @copydoc boot_uart_parse_update_chunk */
 bool boot_uart_parse_update_chunk(const uint8_t *payload, uint16_t length,
                                   boot_uart_update_chunk_t *request)
 {
@@ -48,6 +52,7 @@ bool boot_uart_parse_update_chunk(const uint8_t *payload, uint16_t length,
     return true;
 }
 
+/** @copydoc boot_uart_parse_update_end */
 bool boot_uart_parse_update_end(const uint8_t *payload, uint16_t length,
                                 secure_boot_slot_t *slot)
 {
@@ -61,6 +66,7 @@ bool boot_uart_parse_update_end(const uint8_t *payload, uint16_t length,
     return true;
 }
 
+/** @copydoc boot_uart_parse_slot_command */
 bool boot_uart_parse_slot_command(const uint8_t *payload, uint16_t length,
                                   uint8_t command, secure_boot_slot_t *slot)
 {
@@ -73,6 +79,7 @@ bool boot_uart_parse_slot_command(const uint8_t *payload, uint16_t length,
     return true;
 }
 
+/** @copydoc boot_uart_build_report */
 bool boot_uart_build_report(uint8_t *payload, uint16_t capacity, uint8_t report,
                             uint8_t command, uint8_t controller_state,
                             secure_boot_result_t result,

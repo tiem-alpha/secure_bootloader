@@ -33,12 +33,25 @@ static const uint32_t k[64] = {
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
     0xc67178f2};
 
+/**
+ * @brief Load one big-endian 32-bit word.
+ *
+ * @param[in] p Pointer to four input bytes.
+ *
+ * @return Decoded 32-bit word.
+ */
 static uint32_t load32(const uint8_t *p)
 {
     return ((uint32_t) p[0] << 24) | ((uint32_t) p[1] << 16) | ((uint32_t) p[2] << 8) |
            p[3];
 }
 
+/**
+ * @brief Store one 32-bit word in big-endian byte order.
+ *
+ * @param[out] p Pointer to four writable bytes.
+ * @param[in] x Word to encode.
+ */
 static void store32(uint8_t *p, uint32_t x)
 {
     p[0] = (uint8_t) (x >> 24);
@@ -47,6 +60,12 @@ static void store32(uint8_t *p, uint32_t x)
     p[3] = (uint8_t) x;
 }
 
+/**
+ * @brief Run the SHA-256 compression function for one 64-byte block.
+ *
+ * @param[in,out] c SHA-256 context whose chaining state is updated.
+ * @param[in] p Pointer to exactly @ref SHA256_BLOCK_SIZE input bytes.
+ */
 static void transform(sha256_context_t *c, const uint8_t *p)
 {
     uint32_t w[16];
@@ -151,6 +170,7 @@ static void transform(sha256_context_t *c, const uint8_t *p)
     c->state[7] += h;
 }
 
+/** @copydoc sha256_init */
 void sha256_init(sha256_context_t *c)
 {
     static const uint32_t initial[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
@@ -166,6 +186,7 @@ void sha256_init(sha256_context_t *c)
     c->buffer_size = 0;
 }
 
+/** @copydoc sha256_update */
 void sha256_update(sha256_context_t *c, const void *data, size_t size)
 {
     const uint8_t *p = (const uint8_t *) data;
@@ -212,6 +233,7 @@ void sha256_update(sha256_context_t *c, const void *data, size_t size)
     }
 }
 
+/** @copydoc sha256_final */
 void sha256_final(sha256_context_t *c, uint8_t digest[32])
 {
     uint64_t bits;
@@ -249,6 +271,7 @@ void sha256_final(sha256_context_t *c, uint8_t digest[32])
     crypto_secure_zero(c, sizeof *c);
 }
 
+/** @copydoc sha256_compute */
 void sha256_compute(const void *data, size_t size, uint8_t digest[32])
 {
     sha256_context_t c;

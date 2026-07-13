@@ -23,12 +23,35 @@ extern "C"
 /** Streaming parser needs more bytes. */
 #define PACK_RUNNING 1
 
-/** Streaming byte unpacker callback. */
+/**
+ * @brief Streaming byte unpacker callback.
+ *
+ * @param[in] byte Next received byte.
+ * @param[out] buffer_out Payload output buffer.
+ * @param[in,out] offset Payload offset state.
+ * @param[in,out] length Payload length state.
+ * @param[in] size_out Payload output capacity.
+ * @param[in,out] crc Running CRC state.
+ * @param[in,out] state Parser state.
+ *
+ * @return PACK_RUNNING, PACK_SUCCESS, or implementation-specific error code.
+ */
 typedef uint8_t (*unpack_data_byte)(uint8_t byte, uint8_t *buffer_out,
                                     uint16_t *offset, uint16_t *length,
                                     uint16_t size_out, uint16_t *crc,
                                     uint16_t *state);
-/** Payload-to-frame packer callback. */
+
+/**
+ * @brief Payload-to-frame packer callback.
+ *
+ * @param[in] data Payload bytes.
+ * @param[in] length Payload length.
+ * @param[out] buffer_out Output frame buffer.
+ * @param[in] size_out Output frame buffer capacity.
+ * @param[out] packed_length Number of frame bytes written.
+ *
+ * @return PACK_SUCCESS or implementation-specific error code.
+ */
 typedef uint8_t (*pack_data)(const uint8_t *data, uint16_t length,
                              uint8_t *buffer_out, uint16_t size_out,
                              uint16_t *packed_length);
@@ -50,11 +73,33 @@ typedef struct Packer_t
     unpack_data_byte unpack;
 } Packer_t;
 
-/** Reset parser state while preserving configured pack/unpack callbacks. */
+/**
+ * @brief Reset parser state while preserving configured callbacks.
+ *
+ * @param[in,out] packer Packer instance. Must not be NULL.
+ *
+ * @post Streaming unpack state, CRC, offset, and length are reset.
+ */
 void unit_packer_init_no_func(Packer_t *packer);
-/** Initialize parser state and configure pack/unpack callbacks. */
+
+/**
+ * @brief Initialize parser state and configure callbacks.
+ *
+ * @param[out] packer Packer instance. Must not be NULL.
+ * @param[in] pack Payload-to-frame callback.
+ * @param[in] unpack Streaming frame decoder callback.
+ *
+ * @post Callback pointers are assigned and parser state is reset.
+ */
 void unit_packer_init(Packer_t *packer, pack_data pack, unpack_data_byte unpack);
-/** Replace pack/unpack callbacks without otherwise reinitializing the caller. */
+
+/**
+ * @brief Replace callbacks and reset parser state.
+ *
+ * @param[in,out] packer Packer instance. Must not be NULL.
+ * @param[in] pack Payload-to-frame callback.
+ * @param[in] unpack Streaming frame decoder callback.
+ */
 void set_packer_process(Packer_t *packer, pack_data pack, unpack_data_byte unpack);
 
 #ifdef __cplusplus

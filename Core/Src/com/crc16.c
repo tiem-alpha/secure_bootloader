@@ -40,13 +40,15 @@ const uint16_t crc_table[256] =
  0xE70E, 0xF687, 0xC41C, 0xD595, 0xA12A, 0xB0A3, 0x8238, 0x93B1,
  0x6B46, 0x7ACF, 0x4854, 0x59DD, 0x2D62, 0x3CEB, 0x0E70, 0x1FF9,
  0xF78F, 0xE606, 0xD49D, 0xC514, 0xB1AB, 0xA022, 0x92B9, 0x8330,
- 0x7BC7, 0x6A4E, 0x58D5, 0x495C, 0x3DE3, 0x2C6A, 0x1EF1, 0x0F78
+  0x7BC7, 0x6A4E, 0x58D5, 0x495C, 0x3DE3, 0x2C6A, 0x1EF1, 0x0F78
 };
 
+/** @copydoc crc16_init */
 void crc16_init(uint16_t *crc){
     *crc =0xFFFF;
 }
 
+/** @copydoc crc16_cal */
 uint16_t crc16_cal(uint8_t *buff, uint32_t len)
 {
 
@@ -66,6 +68,7 @@ uint16_t crc16_cal(uint8_t *buff, uint32_t len)
 }
 
 
+/** @copydoc crc16_frag_cal */
 void crc16_frag_cal(uint16_t *crc, uint8_t *buff, uint32_t len)
 {
 
@@ -81,6 +84,7 @@ void crc16_frag_cal(uint16_t *crc, uint8_t *buff, uint32_t len)
 		return ;
 }
 
+/** @copydoc crc16_byte_cal */
 void crc16_byte_cal(uint16_t *crc, uint8_t byte)
 {
 	(*crc) = ((*crc) >> 8) ^ crc_table[ ((*crc) ^ (uint16_t) byte) & 0x00FF ];

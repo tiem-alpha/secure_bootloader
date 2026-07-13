@@ -60,7 +60,13 @@ Packer_t uartPacker = {
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
+/**
+  * @brief Initialize GPIO pins used by the bootloader board support code.
+  */
 static void MX_GPIO_Init(void);
+/**
+  * @brief Initialize USART1 for bootloader UART communication.
+  */
 static void MX_USART1_UART_Init(void);
 // static void MX_WWDG_Init(void);
 /* USER CODE BEGIN PFP */
@@ -70,6 +76,14 @@ static void MX_USART1_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+/**
+  * @brief HAL RX-complete callback for USART1.
+  *
+  * @param[in] huart UART handle supplied by HAL.
+  *
+  * @post Queues the received byte into the communication manager and rearms
+  *       interrupt-driven reception for the next byte.
+  */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART1)
@@ -80,6 +94,13 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   }
 }
 
+/**
+  * @brief HAL TX-complete callback for USART1.
+  *
+  * @param[in] huart UART handle supplied by HAL.
+  *
+  * @post Clears the communication manager TX-in-progress flag.
+  */
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART1)
@@ -88,16 +109,36 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
   }
 }
 
+/**
+  * @brief Start a non-blocking USART1 transmit operation.
+  *
+  * @param[in] buff Bytes to transmit.
+  * @param[in] length Number of bytes to transmit.
+  *
+  * @return true when HAL accepted the interrupt-driven transmit request.
+  * @return false when HAL_UART_Transmit_IT returned an error.
+  */
 static bool uart_send(const uint8_t *buff, uint16_t length)
 {
   return HAL_UART_Transmit_IT(&huart1, buff, length) == HAL_OK;
 }
 
+/**
+  * @brief Forward one decoded UART payload to the boot controller.
+  *
+  * @param[in] data Decoded payload buffer.
+  * @param[in] length Payload length in bytes.
+  */
 static void receive_callback(uint8_t *data, uint16_t length)
 {
   boot_controller_on_packet(&bootController, data, length);
 }
 
+/**
+  * @brief Forward a communication/parser failure to the boot controller.
+  *
+  * @param[in] error Parser or communication error code.
+  */
 static void receive_fail_callback(uint8_t error)
 {
   boot_controller_on_parser_error(&bootController, error);
@@ -170,7 +211,7 @@ int main(void)
   }
 
   /* USER CODE END 2 */
-
+log_println("Bootloader started.\r\n");
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)

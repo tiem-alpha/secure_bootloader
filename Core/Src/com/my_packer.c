@@ -56,6 +56,7 @@
 
 
 
+/** @copydoc my_pack_data */
 uint8_t my_pack_data(const uint8_t *data, uint16_t length, uint8_t *buffer_out, uint16_t size_out, uint16_t *packed_length)
 {
     uint16_t crc = 0;
@@ -96,6 +97,7 @@ uint8_t my_pack_data(const uint8_t *data, uint16_t length, uint8_t *buffer_out, 
     return PARSER_SUCCESS; // Return total length of packed data
 }
 
+/** @copydoc my_unpack_data */
 uint8_t my_unpack_data(const uint8_t *buffer, uint16_t buffer_length, uint8_t *buffer_out, uint16_t size_out)
 {
     // Simulate receiving data
@@ -151,6 +153,7 @@ uint8_t my_unpack_data(const uint8_t *buffer, uint16_t buffer_length, uint8_t *b
     return PARSER_SUCCESS; // Return number of bytes received
 }
 
+/** @copydoc my_unpack_data_state */
 uint8_t my_unpack_data_state(uint8_t byte, uint8_t *buffer_out, uint16_t *offset, uint16_t *length, uint16_t size_out, uint16_t *crc, uint16_t *state)
 {
     uint8_t ret = PARSER_RUNNING;

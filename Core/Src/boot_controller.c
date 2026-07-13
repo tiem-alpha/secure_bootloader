@@ -4,16 +4,41 @@
 
 #include "secure/crypto_manager.h"
 #include "stm32f1xx_hal.h"
+#include "log.h"
 
+/**
+ * @brief Check whether a HAL tick deadline has expired.
+ *
+ * @details
+ * Uses signed subtraction so the comparison remains valid across 32-bit HAL
+ * tick wraparound.
+ *
+ * @param[in] now Current HAL tick value.
+ * @param[in] deadline Absolute HAL tick deadline to compare against.
+ *
+ * @return true when @p now is equal to or later than @p deadline.
+ * @return false when the deadline is still in the future.
+ */
 static bool boot_timeout_elapsed(uint32_t now, uint32_t deadline)
 {
     return (int32_t)(now - deadline) >= 0;
 }
 
+/* Forward declaration used by boot_send_report(). */
 static void boot_send_report_for_slot(boot_controller_t *controller, uint8_t report,
                                       uint8_t command, secure_boot_result_t result,
                                       secure_boot_slot_t slot);
 
+/**
+ * @brief Send a fixed-size UART report for the controller target slot.
+ *
+ * @param[in] controller Controller instance. NULL is accepted and ignored.
+ * @param[in] report Report type, one of `BOOT_UART_REPORT_*`.
+ * @param[in] command Command associated with this report.
+ * @param[in] result Secure boot result to encode in the report.
+ *
+ * @post May queue one UART payload through @ref comm_manager_send_data.
+ */
 static void boot_send_report(boot_controller_t *controller, uint8_t report,
                              uint8_t command, secure_boot_result_t result)
 {
@@ -22,6 +47,25 @@ static void boot_send_report(boot_controller_t *controller, uint8_t report,
                                                  : SECURE_BOOT_SLOT_NONE);
 }
 
+/**
+ * @brief Build and queue a fixed-size UART report for an explicit slot.
+ *
+ * @details
+ * The report payload includes controller state, secure boot result, persistent
+ * status fields, target slot, transfer progress, and image version. If the
+ * controller or communication manager is NULL, the function returns without
+ * doing anything.
+ *
+ * @param[in] controller Controller instance that owns communication state.
+ *                       NULL is accepted and ignored.
+ * @param[in] report Report type, one of `BOOT_UART_REPORT_*`.
+ * @param[in] command Command associated with this report.
+ * @param[in] result Secure boot result to encode in the report.
+ * @param[in] slot Slot associated with this report.
+ *
+ * @post May call @ref secure_boot_get_status.
+ * @post May queue one report payload through @ref comm_manager_send_data.
+ */
 static void boot_send_report_for_slot(boot_controller_t *controller, uint8_t report,
                                       uint8_t command, secure_boot_result_t result,
                                       secure_boot_slot_t slot)
@@ -45,6 +89,22 @@ static void boot_send_report_for_slot(boot_controller_t *controller, uint8_t rep
     }
 }
 
+/**
+ * @brief Clear all volatile state for the current firmware transfer.
+ *
+ * @details
+ * Resets transfer counters, target slot, Flash writer state, expected hash,
+ * signature buffer, and streaming SHA-256 context. Persistent secure boot
+ * update markers are not changed by this helper; callers must invoke
+ * @ref secure_boot_abort_update when the persistent update state must be
+ * cleared.
+ *
+ * @param[in,out] controller Controller instance whose transfer state is reset.
+ *                           Must not be NULL.
+ *
+ * @post @p controller->target_slot is @ref SECURE_BOOT_SLOT_NONE.
+ * @post Expected hash, signature, and image hash context are zeroed.
+ */
 static void boot_reset_transfer(boot_controller_t *controller)
 {
     controller->expected_image_size = 0U;
@@ -60,6 +120,20 @@ static void boot_reset_transfer(boot_controller_t *controller)
                                sizeof(controller->image_hash));
 }
 
+/**
+ * @brief Check whether a slot is eligible to receive a new image.
+ *
+ * @details
+ * A slot can receive an update only when it is APP1 or APP2, the declared image
+ * size is at least a vector table and fits before the slot manifest, and the
+ * slot is not the currently confirmed slot.
+ *
+ * @param[in] slot Candidate target slot.
+ * @param[in] image_size Declared firmware image size in bytes.
+ *
+ * @return true when the slot and image size are acceptable for UPDATE_BEGIN.
+ * @return false when the request should be rejected.
+ */
 static bool boot_slot_can_receive_update(secure_boot_slot_t slot,
                                          uint32_t image_size)
 {
@@ -72,6 +146,22 @@ static bool boot_slot_can_receive_update(secure_boot_slot_t slot,
              status.confirmed_slot != SECURE_BOOT_SLOT_NONE);
 }
 
+/**
+ * @brief Enter boot-pending state and emit the JUMP report.
+ *
+ * @details
+ * This helper starts the delayed boot window. The actual application jump is
+ * attempted later from @ref boot_controller_poll after the minimum jump delay
+ * and UART drain checks.
+ *
+ * @param[in,out] controller Controller instance. Must not be NULL.
+ *
+ * @post @p controller->state is @ref BOOT_CONTROLLER_BOOT_PENDING.
+ * @post @p controller->deadline_ms is set to now + @ref BOOT_JUMP_DELAY_MS.
+ * @post @p controller->force_boot_deadline_ms is set to now +
+ *       @ref BOOT_JUMP_MAX_WAIT_MS.
+ * @post Queues a JUMP report when communication is available.
+ */
 static void boot_schedule_boot(boot_controller_t *controller)
 {
     uint32_t now = HAL_GetTick();
@@ -83,6 +173,24 @@ static void boot_schedule_boot(boot_controller_t *controller)
                      BOOT_UART_COMMAND_STATUS, controller->last_result);
 }
 
+/**
+ * @brief Handle an UPDATE_BEGIN command.
+ *
+ * @details
+ * Validates command shape and state, checks whether the target slot can be
+ * updated, marks the persistent update state as receiving, erases the target
+ * slot, copies host-provided image metadata, starts the Flash writer and
+ * streaming SHA-256 context, then enters RECEIVING.
+ *
+ * @param[in,out] controller Controller instance. Must not be NULL.
+ * @param[in] data Decoded UPDATE_BEGIN payload.
+ * @param[in] length Payload length in bytes.
+ *
+ * @post On success, enters @ref BOOT_CONTROLLER_RECEIVING and queues ACK.
+ * @post On failure, leaves or returns to the previous/recovery state as
+ *       implemented by the failing step, updates @p controller->last_result,
+ *       and queues NACK.
+ */
 static void boot_begin_update(boot_controller_t *controller, const uint8_t *data,
                               uint16_t length)
 {
@@ -135,6 +243,23 @@ static void boot_begin_update(boot_controller_t *controller, const uint8_t *data
                      SECURE_BOOT_OK);
 }
 
+/**
+ * @brief Handle an UPDATE_CHUNK command.
+ *
+ * @details
+ * Validates that the controller is receiving, parses the chunk payload, enforces
+ * matching slot and exact sequential offset, writes chunk bytes to Flash,
+ * updates the streaming SHA-256 digest, advances the received byte counter, and
+ * refreshes the update timeout.
+ *
+ * @param[in,out] controller Controller instance. Must not be NULL.
+ * @param[in] data Decoded UPDATE_CHUNK payload.
+ * @param[in] length Payload length in bytes.
+ *
+ * @post On success, @p controller->received_image_size is increased by the
+ *       chunk length and ACK is queued.
+ * @post On failure, @p controller->last_result is set and NACK is queued.
+ */
 static void boot_receive_chunk(boot_controller_t *controller, const uint8_t *data,
                                uint16_t length)
 {
@@ -169,6 +294,29 @@ static void boot_receive_chunk(boot_controller_t *controller, const uint8_t *dat
                      SECURE_BOOT_OK);
 }
 
+/**
+ * @brief Finalize and commit a verified update candidate.
+ *
+ * @details
+ * Flushes any pending odd Flash byte, compares the computed image digest against
+ * the host-declared digest, builds the signed manifest, writes it to the target
+ * slot, and requests trial boot state in persistent secure boot status.
+ *
+ * @param[in,out] controller Controller instance with a complete received image.
+ *                           Must not be NULL.
+ * @param[in] digest Computed SHA-256 digest of received image bytes.
+ *
+ * @return @ref SECURE_BOOT_OK when manifest write and trial request succeed.
+ * @return @ref SECURE_BOOT_ERROR_FLASH on Flash writer or manifest write
+ *         failure.
+ * @return @ref SECURE_BOOT_ERROR_HASH when @p digest does not match the
+ *         expected image hash from UPDATE_BEGIN.
+ * @return @ref SECURE_BOOT_ERROR_SIGNATURE when manifest construction or
+ *         signature validation fails.
+ * @return Any error returned by @ref secure_boot_request_trial.
+ *
+ * @post Sensitive manifest bytes are zeroed before return.
+ */
 static secure_boot_result_t boot_commit_verified_update(
     boot_controller_t *controller, const uint8_t *digest)
 {
@@ -198,6 +346,25 @@ static secure_boot_result_t boot_commit_verified_update(
     return result;
 }
 
+/**
+ * @brief Handle an UPDATE_END command.
+ *
+ * @details
+ * Verifies that the declared slot matches the active transfer and that all
+ * expected image bytes have been written, finalizes the streaming SHA-256 hash,
+ * commits the manifest/trial state through @ref boot_commit_verified_update,
+ * and schedules boot when verification succeeds.
+ *
+ * @param[in,out] controller Controller instance. Must not be NULL.
+ * @param[in] data Decoded UPDATE_END payload.
+ * @param[in] length Payload length in bytes.
+ *
+ * @post On success, queues ACK for UPDATE_END, then queues JUMP and enters
+ *       @ref BOOT_CONTROLLER_BOOT_PENDING.
+ * @post On validation or verification failure, enters
+ *       @ref BOOT_CONTROLLER_RECOVERY, aborts the persistent update marker when
+ *       appropriate, updates @p controller->last_result, and queues NACK.
+ */
 static void boot_finish_update(boot_controller_t *controller, const uint8_t *data,
                                uint16_t length)
 {
@@ -250,6 +417,22 @@ void boot_controller_init(boot_controller_t *controller, CommManager_t *comm)
                      BOOT_UART_COMMAND_STATUS, recovery_result);
 }
 
+/**
+ * @brief Handle a VERIFY_SLOT command.
+ *
+ * @details
+ * Rejects the command while an update is being received or verified. Otherwise,
+ * parses the requested slot, asks the secure boot layer to verify it, and sends
+ * ACK or NACK for the requested slot.
+ *
+ * @param[in,out] controller Controller instance. Must not be NULL.
+ * @param[in] data Decoded VERIFY_SLOT payload.
+ * @param[in] length Payload length in bytes.
+ *
+ * @post @p controller->last_result contains the verification result or argument
+ *       or state error.
+ * @post Queues ACK when the slot verifies successfully; otherwise queues NACK.
+ */
 static void boot_verify_slot_command(boot_controller_t *controller,
                                      const uint8_t *data, uint16_t length)
 {
@@ -280,6 +463,23 @@ static void boot_verify_slot_command(boot_controller_t *controller,
                               controller->last_result, slot);
 }
 
+/**
+ * @brief Handle a CONFIRM_SLOT command.
+ *
+ * @details
+ * Rejects the command while an update is being received or verified. Otherwise,
+ * parses the requested slot, asks the secure boot layer to confirm it as the
+ * running healthy image, and sends ACK or NACK for the requested slot.
+ *
+ * @param[in,out] controller Controller instance. Must not be NULL.
+ * @param[in] data Decoded CONFIRM_SLOT payload.
+ * @param[in] length Payload length in bytes.
+ *
+ * @post @p controller->last_result contains the confirmation result or argument
+ *       or state error.
+ * @post Queues ACK when the slot is confirmed successfully; otherwise queues
+ *       NACK.
+ */
 static void boot_confirm_slot_command(boot_controller_t *controller,
                                       const uint8_t *data, uint16_t length)
 {
@@ -386,8 +586,10 @@ void boot_controller_poll(boot_controller_t *controller)
     }
 
     now = HAL_GetTick();
+    // Handle timeouts for various states
     if (controller->state == BOOT_CONTROLLER_WAIT_UPDATE &&
         boot_timeout_elapsed(now, controller->deadline_ms)) {
+            // No update received within the timeout, schedule boot.
         boot_schedule_boot(controller);
         boot_send_report(controller, BOOT_UART_REPORT_STATUS,
                          BOOT_UART_COMMAND_STATUS, SECURE_BOOT_OK);

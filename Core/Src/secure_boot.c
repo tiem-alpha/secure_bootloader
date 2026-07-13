@@ -7,8 +7,22 @@
 #include "secure/crypto_manager.h"
 #include "stm32f1xx_hal.h"
 
+/** Maximum number of boot attempts allowed for one trial image. */
 #define SECURE_BOOT_TRIAL_BOOT_LIMIT 1U
 
+/**
+ * @brief Compute CRC-32 for a persistent status record fragment.
+ *
+ * @details
+ * Uses the reflected CRC-32 polynomial `0xEDB88320` with initial value
+ * `0xFFFFFFFF` and final bit inversion. The secure boot status validator uses
+ * this over all bytes before the `crc32` field.
+ *
+ * @param[in] data Input buffer. Must point to at least @p size bytes.
+ * @param[in] size Number of bytes to include in the CRC.
+ *
+ * @return CRC-32 value for the input buffer.
+ */
 static uint32_t secure_boot_crc32(const void *data, size_t size)
 {
     const uint8_t *bytes = (const uint8_t *)data;
@@ -27,11 +41,20 @@ static uint32_t secure_boot_crc32(const void *data, size_t size)
     return ~crc;
 }
 
+/**
+ * @brief Check whether a logical slot value names an application slot.
+ *
+ * @param[in] slot Slot value to validate.
+ *
+ * @return true for @ref SECURE_BOOT_SLOT_APP1 or @ref SECURE_BOOT_SLOT_APP2.
+ * @return false for @ref SECURE_BOOT_SLOT_NONE or unsupported values.
+ */
 static bool secure_boot_slot_is_valid(secure_boot_slot_t slot)
 {
     return slot == SECURE_BOOT_SLOT_APP1 || slot == SECURE_BOOT_SLOT_APP2;
 }
 
+/** @copydoc secure_boot_slot_base */
 uint32_t secure_boot_slot_base(secure_boot_slot_t slot)
 {
     if (slot == SECURE_BOOT_SLOT_APP1) {
@@ -43,11 +66,13 @@ uint32_t secure_boot_slot_base(secure_boot_slot_t slot)
     return 0U;
 }
 
+/** @copydoc secure_boot_slot_max_image_size */
 uint32_t secure_boot_slot_max_image_size(void)
 {
     return BOOT_APP_SLOT_SIZE - SECURE_BOOT_MANIFEST_SIZE;
 }
 
+/** @copydoc secure_boot_manifest_for_slot */
 const secure_boot_manifest_t *secure_boot_manifest_for_slot(secure_boot_slot_t slot)
 {
     uint32_t base = secure_boot_slot_base(slot);
@@ -60,6 +85,20 @@ const secure_boot_manifest_t *secure_boot_manifest_for_slot(secure_boot_slot_t s
                                              SECURE_BOOT_MANIFEST_SIZE);
 }
 
+/**
+ * @brief Validate the application vector table stored at an image base.
+ *
+ * @details
+ * The initial MSP must point inside configured SRAM, the reset handler must be
+ * a Thumb address, and the reset handler target must lie inside the signed
+ * image byte range.
+ *
+ * @param[in] image_base Absolute Flash address of the application vector table.
+ * @param[in] image_size Signed application image size in bytes.
+ *
+ * @return true when the vector table is plausible for this MCU layout.
+ * @return false when MSP or reset handler validation fails.
+ */
 static bool secure_boot_vector_table_is_valid(uint32_t image_base, uint32_t image_size)
 {
     const uint32_t *vectors = (const uint32_t *)image_base;
@@ -72,6 +111,7 @@ static bool secure_boot_vector_table_is_valid(uint32_t image_base, uint32_t imag
            reset_address < image_base + image_size;
 }
 
+/** @copydoc secure_boot_verify_slot */
 secure_boot_result_t secure_boot_verify_slot(secure_boot_slot_t slot,
                                              const secure_boot_manifest_t **manifest_out)
 {
@@ -130,6 +170,14 @@ secure_boot_result_t secure_boot_verify_slot(secure_boot_slot_t slot,
     return SECURE_BOOT_OK;
 }
 
+/**
+ * @brief Validate one persistent secure boot status record.
+ *
+ * @param[in] status Status record read from Flash. Must not be NULL.
+ *
+ * @return true when magic, version, size, and CRC all match.
+ * @return false when the record is not usable.
+ */
 static bool secure_boot_status_is_valid(const secure_boot_status_t *status)
 {
     return status->magic == SECURE_BOOT_STATUS_MAGIC &&
@@ -138,6 +186,13 @@ static bool secure_boot_status_is_valid(const secure_boot_status_t *status)
            status->crc32 == secure_boot_crc32(status, offsetof(secure_boot_status_t, crc32));
 }
 
+/**
+ * @brief Build the default in-RAM status used when Flash has no valid record.
+ *
+ * @param[out] status Status object to initialize. Must not be NULL.
+ *
+ * @post The status is idle with no confirmed, trial, or update slot.
+ */
 static void secure_boot_default_status(secure_boot_status_t *status)
 {
     memset(status, 0, sizeof(*status));
@@ -150,6 +205,19 @@ static void secure_boot_default_status(secure_boot_status_t *status)
     status->update_state = SECURE_BOOT_UPDATE_IDLE;
 }
 
+/**
+ * @brief Load the newest valid persistent status record.
+ *
+ * @details
+ * The primary and backup Flash status pages are both checked. If both are
+ * valid, the record with the higher generation is copied out. If neither is
+ * valid, a default status is returned in RAM and the source pointer is NULL.
+ *
+ * @param[out] status Destination status object. Must not be NULL.
+ *
+ * @return Pointer to the Flash record that was selected.
+ * @return NULL when no valid Flash record exists and default status was used.
+ */
 static const secure_boot_status_t *secure_boot_load_status(secure_boot_status_t *status)
 {
     const secure_boot_status_t *primary =
@@ -172,6 +240,7 @@ static const secure_boot_status_t *secure_boot_load_status(secure_boot_status_t 
     return NULL;
 }
 
+/** @copydoc secure_boot_get_status */
 secure_boot_result_t secure_boot_get_status(secure_boot_status_t *status)
 {
     if (status == NULL) {
@@ -182,12 +251,35 @@ secure_boot_result_t secure_boot_get_status(secure_boot_status_t *status)
     return SECURE_BOOT_OK;
 }
 
+/**
+ * @brief Clear update-in-progress fields in a loaded status object.
+ *
+ * @param[in,out] status Status object to modify. Must not be NULL.
+ *
+ * @post `update_slot` is @ref SECURE_BOOT_SLOT_NONE.
+ * @post `update_state` is @ref SECURE_BOOT_UPDATE_IDLE.
+ */
 static void secure_boot_clear_update_marker(secure_boot_status_t *status)
 {
     status->update_slot = SECURE_BOOT_SLOT_NONE;
     status->update_state = SECURE_BOOT_UPDATE_IDLE;
 }
 
+/**
+ * @brief Persist a modified status record to the alternate status page.
+ *
+ * @details
+ * Refreshes fixed metadata, increments generation, recomputes CRC, then writes
+ * to the opposite page from @p source. If @p source is NULL or points to the
+ * backup page, the primary page is used.
+ *
+ * @param[in,out] status Status object to finalize and write. Must not be NULL.
+ * @param[in] source Flash status page that supplied the previous record, or
+ *                   NULL when committing from default status.
+ *
+ * @return @ref SECURE_BOOT_OK on successful Flash write.
+ * @return @ref SECURE_BOOT_ERROR_FLASH when status persistence fails.
+ */
 static secure_boot_result_t secure_boot_commit_status(secure_boot_status_t *status,
                                                        const secure_boot_status_t *source)
 {
@@ -207,6 +299,7 @@ static secure_boot_result_t secure_boot_commit_status(secure_boot_status_t *stat
                : SECURE_BOOT_ERROR_FLASH;
 }
 
+/** @copydoc secure_boot_recover_interrupted_update */
 secure_boot_result_t secure_boot_recover_interrupted_update(void)
 {
     secure_boot_status_t status;
@@ -220,6 +313,7 @@ secure_boot_result_t secure_boot_recover_interrupted_update(void)
     return secure_boot_commit_status(&status, source);
 }
 
+/** @copydoc secure_boot_begin_update */
 secure_boot_result_t secure_boot_begin_update(secure_boot_slot_t slot)
 {
     secure_boot_status_t status;
@@ -238,6 +332,7 @@ secure_boot_result_t secure_boot_begin_update(secure_boot_slot_t slot)
     return secure_boot_commit_status(&status, source);
 }
 
+/** @copydoc secure_boot_abort_update */
 secure_boot_result_t secure_boot_abort_update(void)
 {
     secure_boot_status_t status;
@@ -251,6 +346,18 @@ secure_boot_result_t secure_boot_abort_update(void)
     return secure_boot_commit_status(&status, source);
 }
 
+/**
+ * @brief Verify a slot and enforce the anti-rollback minimum version.
+ *
+ * @param[in] slot Slot to verify.
+ * @param[in] minimum_version Lowest image version accepted by policy.
+ * @param[out] manifest_out Verified manifest pointer on success. Must not be
+ *                           NULL because version is read from it.
+ *
+ * @return @ref SECURE_BOOT_OK when the slot is valid and new enough.
+ * @return Any error returned by @ref secure_boot_verify_slot.
+ * @return @ref SECURE_BOOT_ERROR_ROLLBACK when the image version is too old.
+ */
 static secure_boot_result_t secure_boot_verify_acceptable_slot(
     secure_boot_slot_t slot, uint32_t minimum_version,
     const secure_boot_manifest_t **manifest_out)
@@ -267,6 +374,7 @@ static secure_boot_result_t secure_boot_verify_acceptable_slot(
     return SECURE_BOOT_OK;
 }
 
+/** @copydoc secure_boot_request_trial */
 secure_boot_result_t secure_boot_request_trial(secure_boot_slot_t slot)
 {
     secure_boot_status_t status;
@@ -285,6 +393,7 @@ secure_boot_result_t secure_boot_request_trial(secure_boot_slot_t slot)
     return secure_boot_commit_status(&status, source);
 }
 
+/** @copydoc secure_boot_confirm_running_image */
 secure_boot_result_t secure_boot_confirm_running_image(secure_boot_slot_t slot)
 {
     secure_boot_status_t status;
@@ -309,6 +418,19 @@ secure_boot_result_t secure_boot_confirm_running_image(secure_boot_slot_t slot)
     return secure_boot_commit_status(&status, source);
 }
 
+/**
+ * @brief Select the best non-trial fallback image.
+ *
+ * @details
+ * Both application slots are verified against the current minimum version. If
+ * both are valid, the higher image version is selected. If only one is valid,
+ * that slot is selected.
+ *
+ * @param[in] status Current secure boot status. Must not be NULL.
+ *
+ * @return Selected slot, or @ref SECURE_BOOT_SLOT_NONE when no valid fallback
+ *         image exists.
+ */
 static secure_boot_slot_t secure_boot_select_fallback(const secure_boot_status_t *status)
 {
     const secure_boot_manifest_t *app1 = NULL;
@@ -329,6 +451,17 @@ static secure_boot_slot_t secure_boot_select_fallback(const secure_boot_status_t
     return SECURE_BOOT_SLOT_NONE;
 }
 
+/**
+ * @brief Transfer execution to an already verified application slot.
+ *
+ * @details
+ * Disables interrupts, stops SysTick, clears pending NVIC state, relocates
+ * VTOR, loads the application MSP, and calls the application reset handler.
+ *
+ * @param[in] slot Slot to jump to. Must already have passed verification.
+ *
+ * @note This function does not return during a successful jump.
+ */
 static void secure_boot_jump_to_image(secure_boot_slot_t slot)
 {
     uint32_t image_base = secure_boot_slot_base(slot);
@@ -354,6 +487,7 @@ static void secure_boot_jump_to_image(secure_boot_slot_t slot)
     }
 }
 
+/** @copydoc secure_boot_boot */
 secure_boot_result_t secure_boot_boot(void)
 {
     secure_boot_status_t status;

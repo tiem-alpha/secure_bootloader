@@ -55,9 +55,29 @@ ENTRY(Reset_Handler)
 /* Specify the memory areas */
 MEMORY
 {
-RAM (xrw)      : ORIGIN = 0x20000000, LENGTH = 20K
-  FLASH (rx)      : ORIGIN = 0x08000000, LENGTH = 40K
+  RAM (xrw)        : ORIGIN = 0x20000000, LENGTH = 20K
+  FLASH (rx)       : ORIGIN = 0x08000000, LENGTH = 40K
+  APP1 (rx)        : ORIGIN = 0x0800A000, LENGTH = 10K
+  APP2 (rx)        : ORIGIN = 0x0800C800, LENGTH = 10K
+  DATA_FLASH (rx)  : ORIGIN = 0x0800F000, LENGTH = 4K
 }
+
+/* Secure boot Flash partition symbols. */
+__boot_region_start__ = ORIGIN(FLASH);
+__boot_region_end__ = ORIGIN(FLASH) + LENGTH(FLASH);
+
+__app1_slot_start__ = ORIGIN(APP1);
+__app1_manifest_start__ = ORIGIN(APP1) + LENGTH(APP1) - 256;
+__app1_slot_end__ = ORIGIN(APP1) + LENGTH(APP1);
+
+__app2_slot_start__ = ORIGIN(APP2);
+__app2_manifest_start__ = ORIGIN(APP2) + LENGTH(APP2) - 256;
+__app2_slot_end__ = ORIGIN(APP2) + LENGTH(APP2);
+
+__boot_data_start__ = ORIGIN(DATA_FLASH);
+__boot_status_primary_start__ = ORIGIN(DATA_FLASH);
+__boot_status_backup_start__ = ORIGIN(DATA_FLASH) + 1K;
+__boot_data_end__ = ORIGIN(DATA_FLASH) + LENGTH(DATA_FLASH);
 
 /* Highest address of the user mode stack */
 _estack = ORIGIN(RAM) + LENGTH(RAM);    /* end of RAM */
@@ -248,4 +268,8 @@ SECTIONS
   }
 
   ASSERT(_etext <= ORIGIN(FLASH) + LENGTH(FLASH), "Bootloader exceeds 40 KiB partition")
+  ASSERT(ORIGIN(APP1) == ORIGIN(FLASH) + LENGTH(FLASH), "APP1 must start after bootloader partition")
+  ASSERT(ORIGIN(APP2) == ORIGIN(APP1) + LENGTH(APP1), "APP2 must start after APP1 partition")
+  ASSERT(ORIGIN(DATA_FLASH) == ORIGIN(APP2) + LENGTH(APP2), "DATA_FLASH must start after APP2 partition")
+  ASSERT(ORIGIN(DATA_FLASH) + LENGTH(DATA_FLASH) == 0x08010000, "Flash partitions must cover 64 KiB")
 }

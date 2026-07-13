@@ -15,9 +15,23 @@
 extern "C" {
 #endif
 
-/** Compatibility wrapper for crypto_manager_constant_time_equal(). */
+/**
+ * @brief Compatibility wrapper for crypto_manager_constant_time_equal().
+ *
+ * @param[in] a First buffer. May be NULL only when @p length is 0.
+ * @param[in] b Second buffer. May be NULL only when @p length is 0.
+ * @param[in] length Number of bytes to compare.
+ *
+ * @return 1 when equal, 0 otherwise.
+ */
 int crypto_constant_time_equal(const uint8_t *a, const uint8_t *b, size_t length);
-/** Compatibility wrapper for crypto_manager_secure_zero(). */
+
+/**
+ * @brief Compatibility wrapper for crypto_manager_secure_zero().
+ *
+ * @param[out] data Buffer to clear. NULL is accepted and ignored.
+ * @param[in] length Number of bytes to clear.
+ */
 void crypto_secure_zero(void *data, size_t length);
 
 #ifdef __cplusplus

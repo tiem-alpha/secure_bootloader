@@ -9,17 +9,38 @@ extern "C"
 {
 #endif
 
-/** Initialize the logging backend. */
+/**
+ * @brief Initialize the logging backend.
+ *
+ * @post SEGGER RTT control block is initialized.
+ */
 void log_init();
 
-/** Write a NUL-terminated string without appending a newline. */
+/**
+ * @brief Write a NUL-terminated string without appending a newline.
+ *
+ * @param[in] str String to write to RTT channel 0.
+ */
 void log_print(const char *str);
 
-/** Write a NUL-terminated string followed by a newline. */
+/**
+ * @brief Write a NUL-terminated string followed by CRLF.
+ *
+ * @param[in] str String to write to RTT channel 0.
+ */
 void log_println(const char *str);
 
-/** printf-style logging helper. */
+#ifdef LOG_ENABLE_PRINTF
+/**
+ * @brief Write a formatted string to RTT channel 0.
+ *
+ * @param[in] format printf-compatible format string.
+ * @param[in] ... Format arguments.
+ *
+ * @note Output is truncated to the internal log buffer size.
+ */
 void log_printf(const char *format, ...);
+#endif
 
 #ifdef __cplusplus
 }

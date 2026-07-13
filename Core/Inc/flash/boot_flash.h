@@ -34,17 +34,21 @@ typedef struct {
 /**
  * @brief Erase all Flash pages belonging to an application slot.
  *
- * @param slot Slot to erase.
+ * @param[in] slot Slot to erase.
+ *
  * @return true on HAL Flash success.
+ * @return false when Flash erase fails.
  */
 bool boot_flash_erase_slot(secure_boot_slot_t slot);
 
 /**
  * @brief Erase and program one boot status page.
  *
- * @param page_address Flash page base address.
- * @param status Status record to write.
+ * @param[in] page_address Flash page base address.
+ * @param[in] status Status record to write.
+ *
  * @return true on success.
+ * @return false when @p status is NULL or Flash erase/program fails.
  */
 bool boot_flash_write_status_page(uint32_t page_address,
                                   const secure_boot_status_t *status);
@@ -52,15 +56,17 @@ bool boot_flash_write_status_page(uint32_t page_address,
 /**
  * @brief Reset a Flash writer to idle state.
  *
- * @param writer Writer context.
+ * @param[out] writer Writer context. NULL is accepted and ignored.
  */
 void boot_flash_writer_reset(boot_flash_writer_t *writer);
 
 /**
  * @brief Start streamed writes for a target slot.
  *
- * @param writer Writer context.
- * @param slot Target application slot.
+ * @param[out] writer Writer context. NULL is accepted and ignored.
+ * @param[in] slot Target application slot.
+ *
+ * @post Writer state is reset and bound to @p slot.
  */
 void boot_flash_writer_begin(boot_flash_writer_t *writer, secure_boot_slot_t slot);
 
@@ -70,10 +76,12 @@ void boot_flash_writer_begin(boot_flash_writer_t *writer, secure_boot_slot_t slo
  * The writer handles STM32 half-word programming requirements and defers a
  * trailing odd byte until the next chunk or flush.
  *
- * @param writer Writer context.
- * @param data Chunk data.
- * @param length Chunk length in bytes.
+ * @param[in,out] writer Writer context.
+ * @param[in] data Chunk data. May be NULL only when @p length is 0.
+ * @param[in] length Chunk length in bytes.
+ *
  * @return true on success.
+ * @return false when arguments are invalid or Flash programming fails.
  */
 bool boot_flash_writer_write(boot_flash_writer_t *writer, const uint8_t *data,
                              uint16_t length);
@@ -81,17 +89,21 @@ bool boot_flash_writer_write(boot_flash_writer_t *writer, const uint8_t *data,
 /**
  * @brief Flush a trailing odd byte by programming it with 0xFF padding.
  *
- * @param writer Writer context.
+ * @param[in,out] writer Writer context.
+ *
  * @return true on success.
+ * @return false when writer is invalid or Flash programming fails.
  */
 bool boot_flash_writer_flush(boot_flash_writer_t *writer);
 
 /**
  * @brief Program a verified manifest at the end of a slot.
  *
- * @param slot Target slot.
- * @param manifest Manifest to write.
+ * @param[in] slot Target slot.
+ * @param[in] manifest Manifest to write.
+ *
  * @return true on success.
+ * @return false when arguments are invalid or Flash programming fails.
  */
 bool boot_flash_write_manifest(secure_boot_slot_t slot,
                                const secure_boot_manifest_t *manifest);

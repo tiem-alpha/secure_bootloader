@@ -63,12 +63,25 @@ static const affine_point P256_G_TABLE_MONT[16] = {
     { {{ 0xbc60055bU, 0x72bcd8b7U, 0x56e27e4bU, 0x03cc23eeU, 0xe4819370U, 0xee337424U, 0x0ad3da09U, 0xe2aa0e43U }}, {{ 0x6383c45dU, 0x40b8524fU, 0x42a41b25U, 0xd7663554U, 0x778a4797U, 0x64efa6deU, 0x7079adf4U, 0x2042170aU }} },
 };
 
+/**
+ * @brief Clear sensitive memory through a volatile pointer.
+ *
+ * @param[out] p Memory region to clear.
+ * @param[in] n Number of bytes to clear.
+ */
 static void memzero(void *p, size_t n)
 {
     volatile uint8_t *v = (volatile uint8_t *)p;
     while (n-- != 0u) *v++ = 0;
 }
 
+/**
+ * @brief Test whether a 256-bit little-limb integer is zero.
+ *
+ * @param[in] a Integer to test.
+ *
+ * @return 1 when all limbs are zero, 0 otherwise.
+ */
 static int u256_is_zero(const u256 *a)
 {
     uint32_t acc = 0;
@@ -77,6 +90,16 @@ static int u256_is_zero(const u256 *a)
     return acc == 0u;
 }
 
+/**
+ * @brief Compare two 256-bit little-limb integers.
+ *
+ * @param[in] a Left operand.
+ * @param[in] b Right operand.
+ *
+ * @return 1 when @p a > @p b.
+ * @return 0 when @p a == @p b.
+ * @return -1 when @p a < @p b.
+ */
 static int u256_cmp(const u256 *a, const u256 *b)
 {
     int i;
@@ -87,6 +110,15 @@ static int u256_cmp(const u256 *a, const u256 *b)
     return 0;
 }
 
+/**
+ * @brief Subtract two 256-bit integers without modular reduction.
+ *
+ * @param[out] r Difference output, `a - b` modulo 2^256.
+ * @param[in] a Minuend.
+ * @param[in] b Subtrahend.
+ *
+ * @return Final borrow bit, 1 when @p a < @p b.
+ */
 static uint32_t u256_sub_raw(u256 *r, const u256 *a, const u256 *b)
 {
     uint64_t borrow = 0;
@@ -100,6 +132,15 @@ static uint32_t u256_sub_raw(u256 *r, const u256 *a, const u256 *b)
     return (uint32_t)borrow;
 }
 
+/**
+ * @brief Add two 256-bit integers without modular reduction.
+ *
+ * @param[out] r Sum output, `a + b` modulo 2^256.
+ * @param[in] a First addend.
+ * @param[in] b Second addend.
+ *
+ * @return Final carry bit.
+ */
 static uint32_t u256_add_raw(u256 *r, const u256 *a, const u256 *b)
 {
     uint64_t carry = 0;
@@ -112,6 +153,14 @@ static uint32_t u256_add_raw(u256 *r, const u256 *a, const u256 *b)
     return (uint32_t)carry;
 }
 
+/**
+ * @brief Add two integers modulo @p m.
+ *
+ * @param[out] r Modular sum output.
+ * @param[in] a First operand, expected in range `[0, m)`.
+ * @param[in] b Second operand, expected in range `[0, m)`.
+ * @param[in] m Modulus.
+ */
 static void mod_add(u256 *r, const u256 *a, const u256 *b, const u256 *m)
 {
     u256 t;
@@ -122,6 +171,14 @@ static void mod_add(u256 *r, const u256 *a, const u256 *b, const u256 *m)
     *r = t;
 }
 
+/**
+ * @brief Subtract two integers modulo @p m.
+ *
+ * @param[out] r Modular difference output.
+ * @param[in] a First operand, expected in range `[0, m)`.
+ * @param[in] b Second operand, expected in range `[0, m)`.
+ * @param[in] m Modulus.
+ */
 static void mod_sub(u256 *r, const u256 *a, const u256 *b, const u256 *m)
 {
     if (u256_sub_raw(r, a, b) != 0u) {
@@ -129,6 +186,12 @@ static void mod_sub(u256 *r, const u256 *a, const u256 *b, const u256 *m)
     }
 }
 
+/**
+ * @brief Decode a 32-byte big-endian integer into little-limb form.
+ *
+ * @param[out] r Decoded integer.
+ * @param[in] in 32-byte big-endian input.
+ */
 static void u256_from_be(u256 *r, const uint8_t in[32])
 {
     int i;
@@ -139,6 +202,12 @@ static void u256_from_be(u256 *r, const uint8_t in[32])
     }
 }
 
+/**
+ * @brief Encode a little-limb integer as 32-byte big-endian bytes.
+ *
+ * @param[out] out 32-byte output buffer.
+ * @param[in] a Integer to encode.
+ */
 static void u256_to_be(uint8_t out[32], const u256 *a)
 {
     int i;
@@ -151,11 +220,28 @@ static void u256_to_be(uint8_t out[32], const u256 *a)
     }
 }
 
+/**
+ * @brief Read one bit from a 256-bit integer.
+ *
+ * @param[in] a Integer to inspect.
+ * @param[in] bit Bit index in range 0..255.
+ *
+ * @return 0 or 1.
+ */
 static int u256_bit(const u256 *a, int bit)
 {
     return (int)((a->v[bit >> 5] >> (bit & 31)) & 1u);
 }
 
+/**
+ * @brief Montgomery multiply two residues modulo @p m.
+ *
+ * @param[out] r Product residue output.
+ * @param[in] a First Montgomery-domain operand.
+ * @param[in] b Second Montgomery-domain operand.
+ * @param[in] m Modulus.
+ * @param[in] n0inv Montgomery reduction constant `-m[0]^-1 mod 2^32`.
+ */
 static void mont_mul(u256 *r, const u256 *a, const u256 *b,
                      const u256 *m, uint32_t n0inv)
 {
@@ -200,34 +286,104 @@ static void mont_mul(u256 *r, const u256 *a, const u256 *b,
     }
 }
 
+/**
+ * @brief Convert a normal integer into Montgomery domain.
+ *
+ * @param[out] r Montgomery-domain output.
+ * @param[in] a Normal-domain input.
+ * @param[in] m Modulus.
+ * @param[in] r2 Precomputed `R^2 mod m`.
+ * @param[in] n0inv Montgomery reduction constant.
+ */
 static void mont_from(u256 *r, const u256 *a, const u256 *m,
                       const u256 *r2, uint32_t n0inv)
 {
     mont_mul(r, a, r2, m, n0inv);
 }
 
+/**
+ * @brief Convert a Montgomery-domain integer back to normal domain.
+ *
+ * @param[out] r Normal-domain output.
+ * @param[in] a Montgomery-domain input.
+ * @param[in] m Modulus.
+ * @param[in] n0inv Montgomery reduction constant.
+ */
 static void mont_to(u256 *r, const u256 *a, const u256 *m, uint32_t n0inv)
 {
     static const u256 one = {{ 1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u }};
     mont_mul(r, a, &one, m, n0inv);
 }
 
+/**
+ * @brief Multiply two P-256 field elements in Montgomery domain.
+ *
+ * @param[out] r Field product output.
+ * @param[in] a First field operand.
+ * @param[in] b Second field operand.
+ */
 static void field_mul(u256 *r, const u256 *a, const u256 *b)
 {
     mont_mul(r, a, b, &P256_P, 0x00000001U);
 }
 
+/**
+ * @brief Square one P-256 field element in Montgomery domain.
+ *
+ * @param[out] r Field square output.
+ * @param[in] a Field operand.
+ */
 static void field_sqr(u256 *r, const u256 *a) { field_mul(r, a, a); }
+
+/**
+ * @brief Add two P-256 field elements in Montgomery domain.
+ *
+ * @param[out] r Field sum output.
+ * @param[in] a First field operand.
+ * @param[in] b Second field operand.
+ */
 static void field_add(u256 *r, const u256 *a, const u256 *b) { mod_add(r, a, b, &P256_P); }
+
+/**
+ * @brief Subtract two P-256 field elements in Montgomery domain.
+ *
+ * @param[out] r Field difference output.
+ * @param[in] a First field operand.
+ * @param[in] b Second field operand.
+ */
 static void field_sub(u256 *r, const u256 *a, const u256 *b) { mod_sub(r, a, b, &P256_P); }
 
+/**
+ * @brief Multiply two P-256 group-order scalars in Montgomery domain.
+ *
+ * @param[out] r Scalar product output.
+ * @param[in] a First scalar operand.
+ * @param[in] b Second scalar operand.
+ */
 static void scalar_mul(u256 *r, const u256 *a, const u256 *b)
 {
     mont_mul(r, a, b, &P256_N, 0xee00bc4fU);
 }
 
+/**
+ * @brief Add two P-256 group-order scalars in Montgomery domain.
+ *
+ * @param[out] r Scalar sum output.
+ * @param[in] a First scalar operand.
+ * @param[in] b Second scalar operand.
+ */
 static void scalar_add(u256 *r, const u256 *a, const u256 *b) { mod_add(r, a, b, &P256_N); }
 
+/**
+ * @brief Raise a Montgomery-domain value to an exponent modulo @p m.
+ *
+ * @param[out] r Power result in Montgomery domain.
+ * @param[in] a Base in Montgomery domain.
+ * @param[in] e 256-bit exponent in normal little-limb form.
+ * @param[in] m Modulus.
+ * @param[in] n0inv Montgomery reduction constant.
+ * @param[in] one_mont Montgomery representation of 1 for @p m.
+ */
 static void mont_pow(u256 *r, const u256 *a, const u256 *e,
                      const u256 *m, uint32_t n0inv, const u256 *one_mont)
 {
@@ -243,6 +399,15 @@ static void mont_pow(u256 *r, const u256 *a, const u256 *e,
     *r = result;
 }
 
+/**
+ * @brief Compute multiplicative inverse in the P-256 field.
+ *
+ * @param[out] r Inverse output in Montgomery domain.
+ * @param[in] a Field element in Montgomery domain.
+ *
+ * @return 0 on success.
+ * @return -1 when @p a is zero.
+ */
 static int field_inv(u256 *r, const u256 *a)
 {
     static const u256 p_minus_2 = {{ 0xfffffffdU, 0xffffffffU, 0xffffffffU, 0x00000000U,
@@ -252,6 +417,15 @@ static int field_inv(u256 *r, const u256 *a)
     return 0;
 }
 
+/**
+ * @brief Compute multiplicative inverse modulo the P-256 group order.
+ *
+ * @param[out] r Inverse output in Montgomery domain.
+ * @param[in] a Scalar in Montgomery domain.
+ *
+ * @return 0 on success.
+ * @return -1 when @p a is zero.
+ */
 static int scalar_inv(u256 *r, const u256 *a)
 {
     static const u256 n_minus_2 = {{ 0xfc63254fU, 0xf3b9cac2U, 0xa7179e84U, 0xbce6faadU,
@@ -261,12 +435,25 @@ static int scalar_inv(u256 *r, const u256 *a)
     return 0;
 }
 
+/**
+ * @brief Set a Jacobian point to the point at infinity.
+ *
+ * @param[out] p Point to reset.
+ */
 static void point_set_infinity(jacobian_point *p)
 {
     memset(p, 0, sizeof(*p));
     p->infinity = 1;
 }
 
+/**
+ * @brief Double a Jacobian P-256 point.
+ *
+ * @param[out] r Doubled point output.
+ * @param[in] p Input point in Jacobian coordinates.
+ *
+ * @post @p r is set to infinity when @p p is infinity or has zero Y.
+ */
 static void point_double(jacobian_point *r, const jacobian_point *p)
 {
     u256 delta;
@@ -320,6 +507,15 @@ static void point_double(jacobian_point *r, const jacobian_point *p)
     r->infinity = 0;
 }
 
+/**
+ * @brief Add an affine point to a Jacobian point.
+ *
+ * @param[out] r Sum output in Jacobian coordinates.
+ * @param[in] p Jacobian input point.
+ * @param[in] q Affine input point in Montgomery field representation.
+ *
+ * @post Handles point-at-infinity and inverse-point cases.
+ */
 static void point_add_mixed(jacobian_point *r, const jacobian_point *p,
                             const affine_point *q)
 {
@@ -390,6 +586,15 @@ static void point_add_mixed(jacobian_point *r, const jacobian_point *p,
     r->infinity = 0;
 }
 
+/**
+ * @brief Convert a Jacobian point to affine coordinates.
+ *
+ * @param[out] r Affine point output.
+ * @param[in] p Jacobian point input.
+ *
+ * @return 0 on success.
+ * @return -1 when @p p is infinity or Z cannot be inverted.
+ */
 static int point_to_affine(affine_point *r, const jacobian_point *p)
 {
     u256 zinv;
@@ -404,6 +609,15 @@ static int point_to_affine(affine_point *r, const jacobian_point *p)
     return 0;
 }
 
+/**
+ * @brief Multiply the P-256 base point by a scalar.
+ *
+ * @param[out] r Affine public point output in Montgomery field representation.
+ * @param[in] k Scalar multiplier in normal little-limb form.
+ *
+ * @return 0 on success.
+ * @return -1 when @p k is zero or conversion to affine fails.
+ */
 static int point_mul_base(affine_point *r, const u256 *k)
 {
     jacobian_point acc;
@@ -425,6 +639,16 @@ static int point_mul_base(affine_point *r, const u256 *k)
     return point_to_affine(r, &acc);
 }
 
+/**
+ * @brief Add two affine P-256 points.
+ *
+ * @param[out] r Affine sum output.
+ * @param[in] a First affine input point.
+ * @param[in] b Second affine input point.
+ *
+ * @return 0 on success.
+ * @return -1 when the resulting point cannot be converted to affine.
+ */
 static int point_add_affine(affine_point *r, const affine_point *a,
                             const affine_point *b)
 {
@@ -437,6 +661,17 @@ static int point_add_affine(affine_point *r, const affine_point *a,
     return point_to_affine(r, &p);
 }
 
+/**
+ * @brief Compute `u1 * G + u2 * Q` for ECDSA verification.
+ *
+ * @param[out] r Affine result point.
+ * @param[in] u1 Base-point scalar.
+ * @param[in] q Public key point in affine Montgomery representation.
+ * @param[in] u2 Public-key scalar.
+ *
+ * @return 0 on success.
+ * @return -1 when the result cannot be converted to affine.
+ */
 static int point_double_mul(affine_point *r, const u256 *u1,
                             const affine_point *q, const u256 *u2)
 {
@@ -469,6 +704,14 @@ static int point_double_mul(affine_point *r, const u256 *u1,
     return point_to_affine(r, &acc);
 }
 
+/**
+ * @brief Check whether an affine point satisfies the P-256 curve equation.
+ *
+ * @param[in] p Affine point in Montgomery field representation.
+ *
+ * @return 1 when the point is on the curve.
+ * @return 0 otherwise.
+ */
 static int point_is_on_curve(const affine_point *p)
 {
     u256 y2;
@@ -486,12 +729,33 @@ static int point_is_on_curve(const affine_point *p)
     return u256_cmp(&y2, &rhs) == 0;
 }
 
+/**
+ * @brief Parse and validate a private scalar.
+ *
+ * @param[out] d Parsed scalar in normal little-limb form.
+ * @param[in] private_key 32-byte big-endian private key.
+ *
+ * @return 1 when `1 <= d < n`.
+ * @return 0 when the scalar is out of range.
+ */
 static int parse_private(u256 *d, const uint8_t private_key[32])
 {
     u256_from_be(d, private_key);
     return !u256_is_zero(d) && u256_cmp(d, &P256_N) < 0;
 }
 
+/**
+ * @brief Draw a random non-zero scalar smaller than the group order.
+ *
+ * @param[out] k Random scalar output.
+ * @param[in] rng Random byte callback.
+ * @param[in,out] rng_ctx User context passed to @p rng.
+ *
+ * @return 0 on success.
+ * @return -1 when the RNG fails or no valid scalar is drawn in 64 attempts.
+ *
+ * @post Temporary random bytes are cleared before return.
+ */
 static int random_scalar(u256 *k, ecdsa_p256_random_func rng, void *rng_ctx)
 {
     uint8_t buf[32];
@@ -509,6 +773,7 @@ static int random_scalar(u256 *k, ecdsa_p256_random_func rng, void *rng_ctx)
     return -1;
 }
 
+/** @copydoc ecdsa_p256_generate_keypair */
 int ecdsa_p256_generate_keypair(uint8_t private_key[32],
                                 uint8_t public_key[64],
                                 ecdsa_p256_random_func rng,
@@ -536,6 +801,7 @@ int ecdsa_p256_generate_keypair(uint8_t private_key[32],
     return 0;
 }
 
+/** @copydoc ecdsa_p256_sign_digest */
 int ecdsa_p256_sign_digest(const uint8_t private_key[32],
                            const uint8_t digest32[32],
                            uint8_t signature[64],
@@ -599,6 +865,7 @@ err:
     return -1;
 }
 
+/** @copydoc ecdsa_p256_verify_digest */
 int ecdsa_p256_verify_digest(const uint8_t public_key[64],
                              const uint8_t digest32[32],
                              const uint8_t signature[64])

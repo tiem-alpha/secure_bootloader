@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <string.h>
 
+/** @copydoc crypto_manager_constant_time_equal */
 int crypto_manager_constant_time_equal(const uint8_t *a, const uint8_t *b,
                                        size_t length)
 {
@@ -19,6 +20,7 @@ int crypto_manager_constant_time_equal(const uint8_t *a, const uint8_t *b,
     return difference == 0U;
 }
 
+/** @copydoc crypto_manager_secure_zero */
 void crypto_manager_secure_zero(void *data, size_t length)
 {
     volatile uint8_t *p = (volatile uint8_t *)data;
@@ -32,6 +34,7 @@ void crypto_manager_secure_zero(void *data, size_t length)
     }
 }
 
+/** @copydoc crypto_manager_public_key_is_provisioned */
 bool crypto_manager_public_key_is_provisioned(void)
 {
     uint32_t nonzero = 0U;
@@ -44,6 +47,7 @@ bool crypto_manager_public_key_is_provisioned(void)
     return nonzero != 0U;
 }
 
+/** @copydoc crypto_manager_verify_digest_signature */
 bool crypto_manager_verify_digest_signature(const uint8_t *digest,
                                             const uint8_t *signature)
 {
@@ -55,6 +59,7 @@ bool crypto_manager_verify_digest_signature(const uint8_t *digest,
     return ecdsa_p256_verify_digest(secure_boot_public_key, digest, signature) == 0;
 }
 
+/** @copydoc crypto_manager_build_signed_manifest */
 bool crypto_manager_build_signed_manifest(uint32_t image_size,
                                           uint32_t image_version,
                                           const uint8_t *image_sha256,

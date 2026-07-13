@@ -38,6 +38,7 @@
 extern "C" {
 #endif
 
+/** Size in bytes of a P-256 scalar, coordinate, or SHA-256 digest. */
 #define ECDSA_P256_SIZE 32u
 
 /** Size in bytes of a raw P-256 public key: X || Y. */

@@ -76,7 +76,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   {
     onReceiveData(&uart1Com, &receiveByte, 1U);
 //    GPIOC->BSRR = (1 << 13);
-    HAL_UART_Receive_IT(&huart1, (uint8_t *)&receiveByte, 1); // doi nhạn doc 1 byte
+    HAL_UART_Receive_IT(&huart1, (uint8_t *)&receiveByte, 1); // Wait for the next byte.
   }
 }
 

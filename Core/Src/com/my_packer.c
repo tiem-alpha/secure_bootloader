@@ -18,24 +18,39 @@
 #define PACKER_FRAME_OVERHEAD (PACKER_HEADER_SIZE + PACKER_CHECKSUM_SIZE + 1U)
 #define PACKER_MAX_MESSAGE_LENGTH (PACKER_FRAME_OVERHEAD + PACKER_MAX_PAYLOAD_SIZE)
 
+    /** Streaming parser state for the bootloader UART frame format. */
     enum STATE_PARSE
     {
+        /** Waiting for the frame start byte. */
         WAIT_START,
+        /** Reading the high byte of the payload length. */
         READ_LENGTH_HIGH,
+        /** Reading the low byte of the payload length. */
         READ_LENGTH_LOW,
+        /** Reading payload bytes and updating CRC. */
         READ_PAYLOAD,
+        /** Reading and validating the high byte of the CRC. */
         READ_CRC_HIGH,
+        /** Reading and validating the low byte of the CRC. */
         READ_CRC_LOW,
+        /** Waiting for the frame end byte. */
         WAIT_END,
     };
 
+    /** Parser status and error codes returned by my_packer functions. */
     enum PARSER_ERROR
     {
+        /** A complete valid frame was encoded or decoded. */
         PARSER_SUCCESS = PACK_SUCCESS,
+        /** Streaming parser needs more bytes. */
         PARSER_RUNNING = PACK_RUNNING,
+        /** Payload length is outside the configured bounds. */
         PARSER_ERROR_LENGTH_OUT_OF_BOUNDS,
+        /** Received CRC does not match calculated CRC. */
         PARSER_ERROR_CRC_MISMATCH,
+        /** Frame start byte is invalid. */
         PARSER_ERROR_INVALID_START_BYTE,
+        /** Frame end byte is invalid. */
         PARSER_ERROR_INVALID_END_BYTE,
     };
 

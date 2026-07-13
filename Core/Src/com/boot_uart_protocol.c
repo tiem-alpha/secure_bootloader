@@ -61,6 +61,18 @@ bool boot_uart_parse_update_end(const uint8_t *payload, uint16_t length,
     return true;
 }
 
+bool boot_uart_parse_slot_command(const uint8_t *payload, uint16_t length,
+                                  uint8_t command, secure_boot_slot_t *slot)
+{
+    if (payload == NULL || slot == NULL || length != 2U ||
+        payload[0] != command) {
+        return false;
+    }
+
+    *slot = (secure_boot_slot_t)payload[1];
+    return true;
+}
+
 bool boot_uart_build_report(uint8_t *payload, uint16_t capacity, uint8_t report,
                             uint8_t command, uint8_t controller_state,
                             secure_boot_result_t result,
@@ -83,7 +95,7 @@ bool boot_uart_build_report(uint8_t *payload, uint16_t capacity, uint8_t report,
     payload[4] = (uint8_t)status->confirmed_slot;
     payload[5] = (uint8_t)status->trial_slot;
     payload[6] = (uint8_t)target_slot;
-    payload[7] = 0U;
+    payload[7] = (uint8_t)status->update_state;
     boot_uart_write_u32_le(&payload[8], received_image_size);
     boot_uart_write_u32_le(&payload[12], expected_image_size);
     boot_uart_write_u32_le(&payload[16], image_version);

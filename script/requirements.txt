@@ -1,1 +1,2 @@
 cryptography>=49.0.0
+pyserial>=3.5

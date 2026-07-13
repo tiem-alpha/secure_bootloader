@@ -94,6 +94,16 @@ bool comm_manager_send_data(CommManager_t *comm_manager, const uint8_t *data,
     return true;
 }
 
+bool comm_manager_tx_idle(CommManager_t *comm_manager)
+{
+    if (comm_manager == NULL) {
+        return true;
+    }
+
+    return comm_manager->comm_tx_in_progress == 0U &&
+           queue_get_data_length(&comm_manager->comm_tx_queue) == 0U;
+}
+
 void comm_control(CommManager_t *comm_manager)
 {
     uint8_t comm_rx[64];

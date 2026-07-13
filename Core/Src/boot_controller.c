@@ -10,8 +10,21 @@ static bool boot_timeout_elapsed(uint32_t now, uint32_t deadline)
     return (int32_t)(now - deadline) >= 0;
 }
 
+static void boot_send_report_for_slot(boot_controller_t *controller, uint8_t report,
+                                      uint8_t command, secure_boot_result_t result,
+                                      secure_boot_slot_t slot);
+
 static void boot_send_report(boot_controller_t *controller, uint8_t report,
                              uint8_t command, secure_boot_result_t result)
+{
+    boot_send_report_for_slot(controller, report, command, result,
+                              controller != NULL ? controller->target_slot
+                                                 : SECURE_BOOT_SLOT_NONE);
+}
+
+static void boot_send_report_for_slot(boot_controller_t *controller, uint8_t report,
+                                      uint8_t command, secure_boot_result_t result,
+                                      secure_boot_slot_t slot)
 {
     uint8_t payload[BOOT_UART_REPORT_SIZE];
     uint16_t length = 0U;
@@ -24,7 +37,7 @@ static void boot_send_report(boot_controller_t *controller, uint8_t report,
     (void)secure_boot_get_status(&status);
     if (boot_uart_build_report(payload, sizeof(payload), report, command,
                                (uint8_t)controller->state, result, &status,
-                               controller->target_slot,
+                               slot,
                                controller->received_image_size,
                                controller->expected_image_size,
                                controller->image_version, &length)) {
@@ -61,8 +74,13 @@ static bool boot_slot_can_receive_update(secure_boot_slot_t slot,
 
 static void boot_schedule_boot(boot_controller_t *controller)
 {
+    uint32_t now = HAL_GetTick();
+
     controller->state = BOOT_CONTROLLER_BOOT_PENDING;
-    controller->deadline_ms = HAL_GetTick() + BOOT_JUMP_DELAY_MS;
+    controller->deadline_ms = now + BOOT_JUMP_DELAY_MS;
+    controller->force_boot_deadline_ms = now + BOOT_JUMP_MAX_WAIT_MS;
+    boot_send_report(controller, BOOT_UART_REPORT_JUMP,
+                     BOOT_UART_COMMAND_STATUS, controller->last_result);
 }
 
 static void boot_begin_update(boot_controller_t *controller, const uint8_t *data,
@@ -79,9 +97,23 @@ static void boot_begin_update(boot_controller_t *controller, const uint8_t *data
         return;
     }
 
-    if (!boot_slot_can_receive_update(request.slot, request.image_size) ||
-        !boot_flash_erase_slot(request.slot)) {
+    if (!boot_slot_can_receive_update(request.slot, request.image_size)) {
+        controller->last_result = SECURE_BOOT_ERROR_STATE;
+        boot_send_report(controller, BOOT_UART_REPORT_NACK,
+                         BOOT_UART_COMMAND_UPDATE_BEGIN, controller->last_result);
+        return;
+    }
+
+    controller->last_result = secure_boot_begin_update(request.slot);
+    if (controller->last_result != SECURE_BOOT_OK) {
+        boot_send_report(controller, BOOT_UART_REPORT_NACK,
+                         BOOT_UART_COMMAND_UPDATE_BEGIN, controller->last_result);
+        return;
+    }
+
+    if (!boot_flash_erase_slot(request.slot)) {
         controller->last_result = SECURE_BOOT_ERROR_FLASH;
+        (void)secure_boot_abort_update();
         boot_send_report(controller, BOOT_UART_REPORT_NACK,
                          BOOT_UART_COMMAND_UPDATE_BEGIN, controller->last_result);
         return;
@@ -190,6 +222,7 @@ static void boot_finish_update(boot_controller_t *controller, const uint8_t *dat
 
     if (controller->last_result != SECURE_BOOT_OK) {
         controller->state = BOOT_CONTROLLER_RECOVERY;
+        (void)secure_boot_abort_update();
         boot_send_report(controller, BOOT_UART_REPORT_NACK,
                          BOOT_UART_COMMAND_UPDATE_END, controller->last_result);
         return;
@@ -202,15 +235,79 @@ static void boot_finish_update(boot_controller_t *controller, const uint8_t *dat
 
 void boot_controller_init(boot_controller_t *controller, CommManager_t *comm)
 {
+    secure_boot_result_t recovery_result;
+
     memset(controller, 0, sizeof(*controller));
     controller->comm = comm;
     controller->state = BOOT_CONTROLLER_WAIT_UPDATE;
     controller->target_slot = SECURE_BOOT_SLOT_NONE;
     boot_flash_writer_reset(&controller->flash_writer);
     controller->deadline_ms = HAL_GetTick() + BOOT_STARTUP_TIMEOUT_MS;
-    controller->last_result = SECURE_BOOT_OK;
-    boot_send_report(controller, BOOT_UART_REPORT_STATUS,
-                     BOOT_UART_COMMAND_STATUS, SECURE_BOOT_OK);
+    controller->force_boot_deadline_ms = 0U;
+    recovery_result = secure_boot_recover_interrupted_update();
+    controller->last_result = recovery_result;
+    boot_send_report(controller, BOOT_UART_REPORT_BOOT,
+                     BOOT_UART_COMMAND_STATUS, recovery_result);
+}
+
+static void boot_verify_slot_command(boot_controller_t *controller,
+                                     const uint8_t *data, uint16_t length)
+{
+    secure_boot_slot_t slot;
+
+    if (controller->state == BOOT_CONTROLLER_RECEIVING ||
+        controller->state == BOOT_CONTROLLER_VERIFYING) {
+        controller->last_result = SECURE_BOOT_ERROR_STATE;
+        boot_send_report(controller, BOOT_UART_REPORT_NACK,
+                         BOOT_UART_COMMAND_VERIFY_SLOT, controller->last_result);
+        return;
+    }
+
+    if (!boot_uart_parse_slot_command(data, length, BOOT_UART_COMMAND_VERIFY_SLOT,
+                                      &slot)) {
+        controller->last_result = SECURE_BOOT_ERROR_ARGUMENT;
+        boot_send_report(controller, BOOT_UART_REPORT_NACK,
+                         BOOT_UART_COMMAND_VERIFY_SLOT, controller->last_result);
+        return;
+    }
+
+    controller->last_result = secure_boot_verify_slot(slot, NULL);
+    boot_send_report_for_slot(controller,
+                              controller->last_result == SECURE_BOOT_OK
+                                  ? BOOT_UART_REPORT_ACK
+                                  : BOOT_UART_REPORT_NACK,
+                              BOOT_UART_COMMAND_VERIFY_SLOT,
+                              controller->last_result, slot);
+}
+
+static void boot_confirm_slot_command(boot_controller_t *controller,
+                                      const uint8_t *data, uint16_t length)
+{
+    secure_boot_slot_t slot;
+
+    if (controller->state == BOOT_CONTROLLER_RECEIVING ||
+        controller->state == BOOT_CONTROLLER_VERIFYING) {
+        controller->last_result = SECURE_BOOT_ERROR_STATE;
+        boot_send_report(controller, BOOT_UART_REPORT_NACK,
+                         BOOT_UART_COMMAND_CONFIRM_SLOT, controller->last_result);
+        return;
+    }
+
+    if (!boot_uart_parse_slot_command(data, length, BOOT_UART_COMMAND_CONFIRM_SLOT,
+                                      &slot)) {
+        controller->last_result = SECURE_BOOT_ERROR_ARGUMENT;
+        boot_send_report(controller, BOOT_UART_REPORT_NACK,
+                         BOOT_UART_COMMAND_CONFIRM_SLOT, controller->last_result);
+        return;
+    }
+
+    controller->last_result = secure_boot_confirm_running_image(slot);
+    boot_send_report_for_slot(controller,
+                              controller->last_result == SECURE_BOOT_OK
+                                  ? BOOT_UART_REPORT_ACK
+                                  : BOOT_UART_REPORT_NACK,
+                              BOOT_UART_COMMAND_CONFIRM_SLOT,
+                              controller->last_result, slot);
 }
 
 void boot_controller_on_packet(boot_controller_t *controller, uint8_t *data,
@@ -225,6 +322,22 @@ void boot_controller_on_packet(boot_controller_t *controller, uint8_t *data,
         boot_send_report(controller, BOOT_UART_REPORT_STATUS,
                          BOOT_UART_COMMAND_STATUS, controller->last_result);
         break;
+    case BOOT_UART_COMMAND_VERIFY_SLOT:
+        boot_verify_slot_command(controller, data, length);
+        break;
+    case BOOT_UART_COMMAND_BOOT_NOW:
+        if (length != 1U || controller->state == BOOT_CONTROLLER_RECEIVING ||
+            controller->state == BOOT_CONTROLLER_VERIFYING) {
+            controller->last_result = SECURE_BOOT_ERROR_STATE;
+            boot_send_report(controller, BOOT_UART_REPORT_NACK,
+                             BOOT_UART_COMMAND_BOOT_NOW, controller->last_result);
+            break;
+        }
+        controller->last_result = SECURE_BOOT_OK;
+        boot_send_report(controller, BOOT_UART_REPORT_ACK,
+                         BOOT_UART_COMMAND_BOOT_NOW, SECURE_BOOT_OK);
+        boot_schedule_boot(controller);
+        break;
     case BOOT_UART_COMMAND_UPDATE_BEGIN:
         boot_begin_update(controller, data, length);
         break;
@@ -236,10 +349,14 @@ void boot_controller_on_packet(boot_controller_t *controller, uint8_t *data,
         break;
     case BOOT_UART_COMMAND_UPDATE_ABORT:
         boot_reset_transfer(controller);
+        (void)secure_boot_abort_update();
         controller->state = BOOT_CONTROLLER_RECOVERY;
         controller->last_result = SECURE_BOOT_OK;
         boot_send_report(controller, BOOT_UART_REPORT_ACK,
                          BOOT_UART_COMMAND_UPDATE_ABORT, SECURE_BOOT_OK);
+        break;
+    case BOOT_UART_COMMAND_CONFIRM_SLOT:
+        boot_confirm_slot_command(controller, data, length);
         break;
     default:
         controller->last_result = SECURE_BOOT_ERROR_ARGUMENT;
@@ -277,12 +394,18 @@ void boot_controller_poll(boot_controller_t *controller)
     } else if (controller->state == BOOT_CONTROLLER_RECEIVING &&
                boot_timeout_elapsed(now, controller->deadline_ms)) {
         boot_reset_transfer(controller);
+        (void)secure_boot_abort_update();
         controller->state = BOOT_CONTROLLER_RECOVERY;
         controller->last_result = SECURE_BOOT_ERROR_STATE;
         boot_send_report(controller, BOOT_UART_REPORT_NACK,
                          BOOT_UART_COMMAND_UPDATE_END, controller->last_result);
     } else if (controller->state == BOOT_CONTROLLER_BOOT_PENDING &&
                boot_timeout_elapsed(now, controller->deadline_ms)) {
+        if (!comm_manager_tx_idle(controller->comm) &&
+            !boot_timeout_elapsed(now, controller->force_boot_deadline_ms)) {
+            return;
+        }
+
         controller->last_result = secure_boot_boot();
         controller->state = BOOT_CONTROLLER_RECOVERY;
         boot_send_report(controller, BOOT_UART_REPORT_NACK,

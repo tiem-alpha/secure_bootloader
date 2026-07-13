@@ -23,9 +23,9 @@ def parse_hex_array(text: str) -> bytes:
     if not cleaned:
         return b""
     if not re.fullmatch(r"[0-9a-fA-F]+", cleaned):
-        raise ValueError("Hex khong hop le. Dung dang: 01 02, 0102, hoac {0x01, 0x02}.")
+        raise ValueError("Invalid hex. Use: 01 02, 0102, or {0x01, 0x02}.")
     if len(cleaned) % 2 != 0:
-        raise ValueError("So ky tu hex phai la so chan.")
+        raise ValueError("Hex string length must be even.")
     return bytes.fromhex(cleaned)
 
 
@@ -66,10 +66,10 @@ def copy_to_clipboard(root: tk.Tk, value: str) -> None:
 
 def p256_private_from_raw(private_bytes: bytes):
     if len(private_bytes) != 32:
-        raise ValueError("Private key P-256 phai dai 32 byte.")
+        raise ValueError("P-256 private key must be 32 bytes.")
     value = int.from_bytes(private_bytes, "big")
     if value <= 0:
-        raise ValueError("Private key P-256 phai khac 0.")
+        raise ValueError("P-256 private key must be non-zero.")
     return ec.derive_private_key(value, ec.SECP256R1())
 
 
@@ -77,7 +77,7 @@ def p256_public_from_raw(public_bytes: bytes):
     if len(public_bytes) == 64:
         public_bytes = b"\x04" + public_bytes
     if len(public_bytes) != 65 or public_bytes[0] != 0x04:
-        raise ValueError("Public key P-256 phai la 64 byte x||y hoac 65 byte uncompressed 0x04||x||y.")
+        raise ValueError("P-256 public key must be 64-byte x||y or 65-byte uncompressed 0x04||x||y.")
     return ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), public_bytes)
 
 
@@ -103,7 +103,7 @@ def signature_to_der(sig: bytes) -> bytes:
 
 def x25519_public_from_private(private_bytes: bytes) -> bytes:
     if len(private_bytes) != 32:
-        raise ValueError("Private key X25519 phai dai 32 byte.")
+        raise ValueError("X25519 private key must be 32 bytes.")
     private_key = x25519.X25519PrivateKey.from_private_bytes(private_bytes)
     return private_key.public_key().public_bytes(
         serialization.Encoding.Raw,
@@ -114,7 +114,7 @@ def x25519_public_from_private(private_bytes: bytes) -> bytes:
 def aes128_key_from_text(text: str) -> bytes:
     key = parse_hex_array(text)
     if len(key) != 16:
-        raise ValueError("AES-128 key phai dai 16 byte.")
+        raise ValueError("AES-128 key must be 16 bytes.")
     return key
 
 
@@ -198,7 +198,7 @@ class CryptoTestGui:
         self.sha_input.grid(row=1, column=0, sticky="nsew", padx=8)
         self.sha_tab.rowconfigure(1, weight=1)
 
-        ttk.Button(self.sha_tab, text="Tinh SHA-256", command=self.compute_sha256).grid(
+        ttk.Button(self.sha_tab, text="Compute SHA-256", command=self.compute_sha256).grid(
             row=2, column=0, sticky="w", padx=8, pady=8
         )
 
@@ -221,7 +221,7 @@ class CryptoTestGui:
         self.aes_mode, mode_row = self.data_mode_selector(self.aes_tab)
         mode_row.grid(row=0, column=0, sticky="w", padx=8, pady=(8, 4))
 
-        self.aes_data = LabeledText(self.aes_tab, "Plaintext khi encrypt / ciphertext hoac ciphertext||tag khi decrypt", height=5)
+        self.aes_data = LabeledText(self.aes_tab, "Plaintext for encrypt / ciphertext or ciphertext||tag for decrypt", height=5)
         self.aes_data.grid(row=1, column=0, sticky="nsew", padx=8)
         self.aes_key = LabeledText(self.aes_tab, "AES-128 key 16 byte", height=3)
         self.aes_key.grid(row=2, column=0, sticky="ew", padx=8, pady=(8, 0))
@@ -229,7 +229,7 @@ class CryptoTestGui:
         self.aes_nonce.grid(row=3, column=0, sticky="ew", padx=8, pady=(8, 0))
         self.aes_aad = LabeledText(self.aes_tab, "AAD hex/C array tuy chon", height=3)
         self.aes_aad.grid(row=4, column=0, sticky="ew", padx=8, pady=(8, 0))
-        self.aes_tag_input = LabeledText(self.aes_tab, "Tag 16 byte khi decrypt neu ciphertext khong gom tag", height=3)
+        self.aes_tag_input = LabeledText(self.aes_tab, "16-byte tag for decrypt when ciphertext does not include tag", height=3)
         self.aes_tag_input.grid(row=5, column=0, sticky="ew", padx=8, pady=(8, 0))
         self.aes_tab.rowconfigure(1, weight=1)
 
@@ -285,11 +285,11 @@ class CryptoTestGui:
             tag = parse_hex_array(tag_text) if tag_text else b""
             if tag:
                 if len(tag) != 16:
-                    raise ValueError("AES-GCM tag phai dai 16 byte.")
+                    raise ValueError("AES-GCM tag must be 16 bytes.")
                 encrypted = ciphertext + tag
             else:
                 if len(ciphertext) < 16:
-                    raise ValueError("Ciphertext||tag phai co it nhat 16 byte tag.")
+                    raise ValueError("Ciphertext||tag must contain at least a 16-byte tag.")
                 encrypted = ciphertext
                 ciphertext = encrypted[:-16]
                 tag = encrypted[-16:]
@@ -338,7 +338,7 @@ class CryptoTestGui:
         )
         ttk.Button(
             alice_group,
-            text="Tinh public tu private",
+            text="Derive public from private",
             command=lambda: self.derive_x25519_public(self.alice_priv, self.alice_pub),
         ).grid(
             row=2, column=0, sticky="w", padx=(120, 8), pady=(0, 8)
@@ -348,7 +348,7 @@ class CryptoTestGui:
         )
         ttk.Button(
             bob_group,
-            text="Tinh public tu private",
+            text="Derive public from private",
             command=lambda: self.derive_x25519_public(self.bob_priv, self.bob_pub),
         ).grid(
             row=2, column=0, sticky="w", padx=(120, 8), pady=(0, 8)
@@ -357,7 +357,7 @@ class CryptoTestGui:
         controls = ttk.Frame(self.ecdh_tab)
         controls.grid(row=2, column=0, sticky="w", padx=8, pady=8)
         ttk.Button(controls, text="Auto gen Alice + Bob", command=self.generate_both_x25519).pack(side="left")
-        ttk.Button(controls, text="Tinh shared key", command=self.compute_x25519_shared).pack(side="left", padx=(8, 0))
+        ttk.Button(controls, text="Compute shared key", command=self.compute_x25519_shared).pack(side="left", padx=(8, 0))
 
         frame_a, self.alice_shared = self.output_box(self.ecdh_tab, "Alice shared = X25519(Alice private, Bob public)", height=4)
         frame_a.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 8))
@@ -410,9 +410,9 @@ class CryptoTestGui:
             alice_public = parse_hex_array(self.alice_pub.get())
             bob_public = parse_hex_array(self.bob_pub.get())
             if len(alice_private) != 32 or len(bob_private) != 32:
-                raise ValueError("Private key X25519 phai dai 32 byte.")
+                raise ValueError("X25519 private key must be 32 bytes.")
             if len(alice_public) != 32 or len(bob_public) != 32:
-                raise ValueError("Public key X25519 phai dai 32 byte.")
+                raise ValueError("X25519 public key must be 32 bytes.")
 
             alice_key = x25519.X25519PrivateKey.from_private_bytes(alice_private)
             bob_key = x25519.X25519PrivateKey.from_private_bytes(bob_private)
@@ -436,17 +436,17 @@ class CryptoTestGui:
         self.ecdsa_data.grid(row=1, column=0, sticky="nsew", padx=8)
         self.ecdsa_priv = LabeledText(self.ecdsa_tab, "Private key P-256 scalar 32 byte", height=3)
         self.ecdsa_priv.grid(row=2, column=0, sticky="ew", padx=8, pady=(8, 0))
-        self.ecdsa_pub = LabeledText(self.ecdsa_tab, "Public key P-256 64 byte x||y hoac 65 byte 0x04||x||y", height=4)
+        self.ecdsa_pub = LabeledText(self.ecdsa_tab, "P-256 public key: 64-byte x||y or 65-byte 0x04||x||y", height=4)
         self.ecdsa_pub.grid(row=3, column=0, sticky="ew", padx=8, pady=(8, 0))
         self.ecdsa_priv.text.bind("<FocusOut>", lambda _event: self.auto_derive_p256_public())
-        self.ecdsa_sig = LabeledText(self.ecdsa_tab, "Signature input de verify: DER hoac raw r||s", height=4)
+        self.ecdsa_sig = LabeledText(self.ecdsa_tab, "Signature input for verify: DER or raw r||s", height=4)
         self.ecdsa_sig.grid(row=4, column=0, sticky="ew", padx=8, pady=(8, 0))
         self.ecdsa_tab.rowconfigure(1, weight=1)
 
         controls = ttk.Frame(self.ecdsa_tab)
         controls.grid(row=5, column=0, sticky="w", padx=8, pady=8)
         ttk.Button(controls, text="Auto gen P-256 key", command=self.generate_p256).pack(side="left")
-        ttk.Button(controls, text="Tinh public tu private", command=self.derive_p256_public).pack(side="left", padx=(8, 0))
+        ttk.Button(controls, text="Derive public from private", command=self.derive_p256_public).pack(side="left", padx=(8, 0))
         ttk.Button(controls, text="Sign", command=self.sign_p256).pack(side="left", padx=(8, 0))
         ttk.Button(controls, text="Verify", command=self.verify_p256).pack(side="left", padx=(8, 0))
 

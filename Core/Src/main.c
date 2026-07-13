@@ -211,7 +211,7 @@ int main(void)
   }
 
   /* USER CODE END 2 */
-log_println("Bootloader started.\r\n");
+  log_println("Bootloader started.\r\n");
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)

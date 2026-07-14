@@ -103,11 +103,6 @@ bool comm_manager_send_data(CommManager_t *comm_manager, const uint8_t *data,
                    comm_manager->comm_tx_pack_buffer, send_length) != send_length) {
         return false;
     }
-    // log_printf("UART  %u bytes.\r\n", send_length);
-    // for(uint16_t i = 0U; i < send_length; ++i) {
-    //     log_printf("%02X ", comm_manager->comm_tx_pack_buffer[i]);
-    // }
-    // log_printf("\r\n");
     return true;
 }
 

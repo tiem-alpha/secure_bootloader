@@ -18,7 +18,7 @@ firmware running on the MCU.
 | MCU          | STM32F103C8T6, 64 KiB Flash, 20 KiB RAM                |
 | UART         | USART1, default 115200 8N1                             |
 | Flash page   | 1 KiB/page                                             |
-| Debug/log    | SEGGER RTT or UART reports                             |
+| Debug/log    | UART reports and rate-limited SEGGER RTT event logging |
 | Host adapter | USB-UART adapter; DTR/RTS optional for automatic reset |
 
 ### Firmware/toolchain
@@ -115,14 +115,13 @@ Manifest/header requirements:
 - `signature` is a raw ECDSA P-256 signature in `r || s` format over the SHA-256
   digest of the signed manifest region.
 
-Slot ownership:
+Update target ownership:
 
-- The PC FOTA tool may request the target slot in `UPDATE_BEGIN`, but the
-  bootloader is the authority that validates the slot, rejects invalid state,
-  writes only to the accepted target slot, and decides which verified slot to
-  boot.
-- A production updater should normally choose the inactive slot. The bootloader
-  must not allow an update to overwrite the currently confirmed slot.
+- The PC FOTA tool does not send, choose, validate, or display a Flash slot.
+- The bootloader infers the Flash write region from the firmware vector table
+  in the first `UPDATE_CHUNK`, then marks the update in progress, erases, and
+  writes internally.
+- UART reports do not expose the selected internal write region.
 
 ## Firmware System Architecture
 
@@ -133,7 +132,7 @@ flowchart LR
     BL --> APP1[App Slot 1]
     BL --> APP2[App Slot 2]
     BL --> DATA[Boot Status Pages]
-    BL --> LOG[SEGGER RTT Log]
+    BL -. optional .-> LOG[SEGGER RTT Log]
 
     PC --> KEY[Private Key / Cert]
     KEY --> PC
@@ -143,7 +142,8 @@ The bootloader firmware is responsible for:
 
 - Reporting bootloader entry over UART.
 - Receiving new firmware over UART.
-- Writing firmware to the inactive slot.
+- Inferring the internal Flash write region from the firmware vector table.
+- Writing firmware to that internal region.
 - Verifying the firmware SHA-256 hash.
 - Verifying the ECDSA P-256 manifest signature.
 - Writing the manifest only after successful verification.
@@ -306,7 +306,7 @@ flowchart TB
     secureboot --> flash
     crypto --> sha[secure/sha256]
     crypto --> ecdsa[secure/ecdsa_p256]
-    main --> log[log/SEGGER_RTT]
+    main -. optional .-> log[log/SEGGER_RTT]
 ```
 
 Main layers:
@@ -320,7 +320,7 @@ Main layers:
 | Crypto manager     | `secure/crypto_manager.*`                | Constant-time compare, secure zero, signature helper               |
 | Crypto primitives  | `secure/sha256.*`, `secure/ecdsa_p256.*` | SHA-256 and ECDSA P-256 verification                               |
 | Communication      | `com/*`                                  | UART frame, queue, packer, command/report protocol                 |
-| Log                | `log/*`                                  | SEGGER RTT logging                                                 |
+| Log                | `log/*`                                  | SEGGER RTT event logging without printf formatting                 |
 | Host tool          | `script/fota_uart_tool.py`               | Key generation, firmware signing, UART transfer                    |
 
 ## Communication Architecture
@@ -340,16 +340,16 @@ CRC is CRC-16/MCRF4XX over `len_hi`, `len_lo`, and `payload`.
 | Command        |  Value | Payload                                                               |
 | -------------- | -----: | --------------------------------------------------------------------- |
 | `STATUS`       | `0x01` | `[cmd]`                                                               |
-| `VERIFY_SLOT`  | `0x02` | `[cmd, slot]`                                                         |
 | `BOOT_NOW`     | `0x03` | `[cmd]`                                                               |
 | `RESET`        | `0x04` | `[cmd]`                                                               |
-| `UPDATE_BEGIN` | `0x10` | `[cmd, slot, image_size u32, version u32, sha256 32B, signature 64B]` |
-| `UPDATE_CHUNK` | `0x11` | `[cmd, slot, offset u32, data...]`                                    |
-| `UPDATE_END`   | `0x12` | `[cmd, slot]`                                                         |
+| `UPDATE_BEGIN` | `0x10` | `[cmd, image_size u32, version u32, sha256 32B, signature 64B]`        |
+| `UPDATE_CHUNK` | `0x11` | `[cmd, offset u32, data...]`                                          |
+| `UPDATE_END`   | `0x12` | `[cmd]`                                                               |
 | `UPDATE_ABORT` | `0x13` | `[cmd]`                                                               |
-| `CONFIRM_SLOT` | `0x14` | `[cmd, slot]`                                                         |
 
-`UPDATE_CHUNK` data is currently limited to 200 bytes.
+`UPDATE_CHUNK` data is currently limited to 200 bytes. The first chunk must
+contain at least the first 8 firmware bytes so the bootloader can inspect the
+vector table before erasing Flash.
 
 ### Reports
 
@@ -368,9 +368,7 @@ Report payload is 20 bytes:
 [1] command
 [2] boot_controller_state
 [3] secure_boot_result
-[4] confirmed_slot
-[5] trial_slot
-[6] target_slot
+[4..6] reserved
 [7] update_state
 [8..11] received_image_size  little-endian
 [12..15] expected_image_size little-endian
@@ -482,22 +480,23 @@ sequenceDiagram
     participant APP as Application
 
     BL->>PC: BOOT report
-    PC->>BL: UPDATE_BEGIN(slot,size,version,sha,signature)
-    BL->>SB: secure_boot_begin_update(slot)
-    SB->>FL: write status update_state=RECEIVING
-    BL->>FL: erase target slot
+    PC->>BL: UPDATE_BEGIN(size,version,sha,signature)
     BL->>PC: ACK UPDATE_BEGIN
 
     loop each chunk
-        PC->>BL: UPDATE_CHUNK(slot,offset,data)
+        PC->>BL: UPDATE_CHUNK(offset,data)
+        BL->>BL: infer write region from vector table on first chunk
+        BL->>SB: secure_boot_begin_update(internal target)
+        SB->>FL: write status update_state=RECEIVING
+        BL->>FL: erase internal target on first chunk
         BL->>FL: program data
         BL->>PC: ACK UPDATE_CHUNK
     end
 
-    PC->>BL: UPDATE_END(slot)
+    PC->>BL: UPDATE_END()
     BL->>SB: verify SHA-256 + ECDSA P-256
     BL->>FL: write manifest
-    BL->>SB: secure_boot_request_trial(slot)
+    BL->>SB: secure_boot_request_trial(internal target)
     SB->>FL: write status trial_slot
     BL->>PC: ACK UPDATE_END
     BL->>PC: JUMP report
@@ -531,7 +530,7 @@ stateDiagram-v2
     [*] --> WAIT_UPDATE
     WAIT_UPDATE --> RECEIVING: UPDATE_BEGIN OK
     WAIT_UPDATE --> BOOT_PENDING: timeout / BOOT_NOW
-    WAIT_UPDATE --> WAIT_UPDATE: STATUS / VERIFY_SLOT
+    WAIT_UPDATE --> WAIT_UPDATE: STATUS
 
     RECEIVING --> RECEIVING: UPDATE_CHUNK OK
     RECEIVING --> VERIFYING: UPDATE_END
@@ -586,6 +585,14 @@ cmake --build --preset Debug
 
 Flash the bootloader at `0x08000000`.
 
+SEGGER RTT logging is enabled by default, but only for major events and error
+paths so FOTA chunks are not slowed by per-frame logs. The firmware does not use
+formatted `printf` logging. Disable RTT completely for minimum Flash use:
+
+```powershell
+cmake --preset Debug -DBOOT_ENABLE_RTT_LOG=OFF
+```
+
 ### 3. Build application
 
 The application must link at the start of a slot:
@@ -618,7 +625,7 @@ In the GUI:
 
 1. Select the private key.
 2. Select the firmware `.bin`.
-3. Select version and slot.
+3. Select version.
 4. Select COM port and baudrate.
 5. Click `Sign firmware`.
 6. Click `Start update`.

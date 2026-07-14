@@ -1,6 +1,3 @@
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
 #include "crc16.h"
 #include "log.h"
 #include "my_packer.h"
@@ -8,6 +5,7 @@
 #include "packer.h"
 #include "com_config.h"
     // Define protocol version
+#define NULL ((void *)0)
 
 #define PACKER_START_BYTE 0xAC
 #define PACKER_END_BYTE 0xBB
@@ -149,7 +147,6 @@ uint8_t my_unpack_data(const uint8_t *buffer, uint16_t buffer_length, uint8_t *b
         log_print( "Error: Invalid end byte.\n");
         return PARSER_ERROR_INVALID_END_BYTE; // Error: Invalid end byte
     }
-    log_print( "Data unpacked successfully.\n");
     return PARSER_SUCCESS; // Return number of bytes received
 }
 

@@ -4,11 +4,18 @@
 #include <string.h>
 
 #include "flash/boot_flash.h"
+#include "log.h"
 #include "platform/boot_platform.h"
 #include "secure/crypto_manager.h"
 
 /** Maximum number of boot attempts allowed for one trial image. */
 #define SECURE_BOOT_TRIAL_BOOT_LIMIT 1U
+
+static secure_boot_slot_t secure_boot_select_active_slot(
+    const secure_boot_status_t *status);
+static secure_boot_result_t secure_boot_verify_acceptable_slot(
+    secure_boot_slot_t slot, uint32_t minimum_version,
+    const secure_boot_manifest_t **manifest_out);
 
 /**
  * @brief Compute CRC-32 for a persistent status record fragment.
@@ -135,10 +142,12 @@ secure_boot_result_t secure_boot_verify_slot(secure_boot_slot_t slot,
         manifest->signed_size != offsetof(secure_boot_manifest_t, signature) ||
         manifest->image_size < 8U ||
         manifest->image_size > secure_boot_slot_max_image_size()) {
+        log_print("SB verify failed: manifest header\r\n");
         return SECURE_BOOT_ERROR_MANIFEST;
     }
 
     if (!secure_boot_vector_table_is_valid(image_base, manifest->image_size)) {
+        log_print("SB verify failed: vector table\r\n");
         return SECURE_BOOT_ERROR_MANIFEST;
     }
 
@@ -146,11 +155,13 @@ secure_boot_result_t secure_boot_verify_slot(secure_boot_slot_t slot,
     if (!crypto_manager_constant_time_equal(image_digest, manifest->image_sha256,
                                             sizeof(image_digest))) {
         crypto_manager_secure_zero(image_digest, sizeof(image_digest));
+        log_print("SB verify failed: image hash\r\n");
         return SECURE_BOOT_ERROR_HASH;
     }
 
     if (!crypto_manager_public_key_is_provisioned()) {
         crypto_manager_secure_zero(image_digest, sizeof(image_digest));
+        log_print("SB verify failed: public key missing\r\n");
         return SECURE_BOOT_ERROR_SIGNATURE;
     }
 
@@ -159,6 +170,7 @@ secure_boot_result_t secure_boot_verify_slot(secure_boot_slot_t slot,
                                                 manifest->signature)) {
         crypto_manager_secure_zero(image_digest, sizeof(image_digest));
         crypto_manager_secure_zero(manifest_digest, sizeof(manifest_digest));
+        log_print("SB verify failed: manifest signature\r\n");
         return SECURE_BOOT_ERROR_SIGNATURE;
     }
 
@@ -320,10 +332,10 @@ secure_boot_result_t secure_boot_begin_update(secure_boot_slot_t slot)
     const secure_boot_status_t *source = secure_boot_load_status(&status);
 
     if (!secure_boot_slot_is_valid(slot)) {
+        log_print("SB verify failed: invalid slot\r\n");
         return SECURE_BOOT_ERROR_ARGUMENT;
     }
-    if (status.confirmed_slot == (uint32_t)slot ||
-        status.update_state != SECURE_BOOT_UPDATE_IDLE) {
+    if (status.update_state != SECURE_BOOT_UPDATE_IDLE) {
         return SECURE_BOOT_ERROR_STATE;
     }
 
@@ -369,6 +381,7 @@ static secure_boot_result_t secure_boot_verify_acceptable_slot(
     }
     if ((*manifest_out)->image_version < minimum_version) {
         *manifest_out = NULL;
+        log_print("SB verify failed: rollback\r\n");
         return SECURE_BOOT_ERROR_ROLLBACK;
     }
     return SECURE_BOOT_OK;
@@ -449,6 +462,98 @@ static secure_boot_slot_t secure_boot_select_fallback(const secure_boot_status_t
         return SECURE_BOOT_SLOT_APP2;
     }
     return SECURE_BOOT_SLOT_NONE;
+}
+
+/**
+ * @brief Return the other application slot.
+ *
+ * @param[in] slot Application slot to invert.
+ *
+ * @return The opposite app slot, or @ref SECURE_BOOT_SLOT_NONE for invalid
+ *         input.
+ */
+static secure_boot_slot_t secure_boot_opposite_slot(secure_boot_slot_t slot)
+{
+    if (slot == SECURE_BOOT_SLOT_APP1) {
+        return SECURE_BOOT_SLOT_APP2;
+    }
+    if (slot == SECURE_BOOT_SLOT_APP2) {
+        return SECURE_BOOT_SLOT_APP1;
+    }
+    return SECURE_BOOT_SLOT_NONE;
+}
+
+/**
+ * @brief Identify the application slot that must not be erased by FOTA.
+ *
+ * @details
+ * A trial slot is considered active only after at least one trial boot was
+ * consumed. A pending trial with boot count zero has not run yet, so the
+ * confirmed slot remains the protected running image. If no status field names
+ * a verified active image, the normal fallback selection is used.
+ *
+ * @param[in] status Current secure boot status. Must not be NULL.
+ *
+ * @return Active/protected slot, or @ref SECURE_BOOT_SLOT_NONE when none can be
+ *         identified.
+ */
+static secure_boot_slot_t secure_boot_select_active_slot(const secure_boot_status_t *status)
+{
+    const secure_boot_manifest_t *manifest = NULL;
+
+    if (secure_boot_slot_is_valid((secure_boot_slot_t)status->trial_slot) &&
+        status->trial_boot_count > 0U &&
+        secure_boot_verify_acceptable_slot((secure_boot_slot_t)status->trial_slot,
+                                           status->minimum_version,
+                                           &manifest) == SECURE_BOOT_OK) {
+        return (secure_boot_slot_t)status->trial_slot;
+    }
+
+    if (secure_boot_slot_is_valid((secure_boot_slot_t)status->confirmed_slot) &&
+        secure_boot_verify_acceptable_slot((secure_boot_slot_t)status->confirmed_slot,
+                                           status->minimum_version,
+                                           &manifest) == SECURE_BOOT_OK) {
+        return (secure_boot_slot_t)status->confirmed_slot;
+    }
+
+    return secure_boot_select_fallback(status);
+}
+
+/** @copydoc secure_boot_select_update_slot */
+secure_boot_result_t secure_boot_select_update_slot(
+    secure_boot_slot_t *selected_slot)
+{
+    secure_boot_status_t status;
+    const secure_boot_manifest_t *manifest = NULL;
+    secure_boot_slot_t active_slot;
+    secure_boot_slot_t candidate_slot;
+
+    if (selected_slot == NULL) {
+        return SECURE_BOOT_ERROR_ARGUMENT;
+    }
+
+    *selected_slot = SECURE_BOOT_SLOT_NONE;
+    (void)secure_boot_load_status(&status);
+    if (status.update_state != SECURE_BOOT_UPDATE_IDLE) {
+        return SECURE_BOOT_ERROR_STATE;
+    }
+
+    active_slot = secure_boot_select_active_slot(&status);
+    if (active_slot == SECURE_BOOT_SLOT_NONE) {
+        *selected_slot = SECURE_BOOT_SLOT_APP1;
+        return SECURE_BOOT_OK;
+    }
+
+    candidate_slot = secure_boot_opposite_slot(active_slot);
+    if (!secure_boot_slot_is_valid(candidate_slot) ||
+        (status.confirmed_slot == (uint32_t)candidate_slot &&
+         secure_boot_verify_acceptable_slot(candidate_slot, status.minimum_version,
+                                            &manifest) == SECURE_BOOT_OK)) {
+        return SECURE_BOOT_ERROR_STATE;
+    }
+
+    *selected_slot = candidate_slot;
+    return SECURE_BOOT_OK;
 }
 
 /**

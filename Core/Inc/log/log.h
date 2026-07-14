@@ -9,6 +9,8 @@ extern "C"
 {
 #endif
 
+#ifdef BOOT_LOG_ENABLE
+
 /**
  * @brief Initialize the logging backend.
  *
@@ -30,16 +32,12 @@ void log_print(const char *str);
  */
 void log_println(const char *str);
 
-#ifdef LOG_ENABLE_PRINTF
-/**
- * @brief Write a formatted string to RTT channel 0.
- *
- * @param[in] format printf-compatible format string.
- * @param[in] ... Format arguments.
- *
- * @note Output is truncated to the internal log buffer size.
- */
-void log_printf(const char *format, ...);
+#else
+
+#define log_init()          ((void)0)
+#define log_print(str)      ((void)0)
+#define log_println(str)    ((void)0)
+
 #endif
 
 #ifdef __cplusplus

@@ -144,16 +144,6 @@ static void receive_fail_callback(uint8_t error)
   boot_controller_on_parser_error(&bootController, error);
 }
 
-// static void sha256_test(void)
-// {
-//     const char *message = "Toi la Nguyen Van Tiem";
-//   uint8_t     digest[SHA256_DIGEST_SIZE];
-//   sha256_compute(message, sizeof("Toi la Nguyen Van Tiem") - 1U, digest);
-//   log_printf("SHA-256 digest: ");
-//   log_hex(digest, sizeof(digest));
-//   log_printf("\r\n");
-// }
-
 // static int test_ecdsa_p256(void)
 // {
 //   uint8_t public_key[ECDSA_P256_PUBLIC_KEY_SIZE];
@@ -211,7 +201,7 @@ int main(void)
   }
 
   /* USER CODE END 2 */
-  log_println("Bootloader started.\r\n");
+  log_println("Bootloader started.");
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
@@ -240,7 +230,9 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI_DIV2;
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL16;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -250,12 +242,12 @@ void SystemClock_Config(void)
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
   {
     Error_Handler();
   }
@@ -384,8 +376,7 @@ void Error_Handler(void)
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* User can add board-specific assert reporting here. */
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */

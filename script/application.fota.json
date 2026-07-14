@@ -1,9 +1,9 @@
 {
-  "firmware_path": "D:\\Embedded\\Project\\stm32f103\\application\\build\\Debug\\application.bin",
-  "image_size": 9496,
+  "firmware_path": "D:\\Embedded\\Project\\stm32f103\\secure_boot\\script\\application.bin",
+  "image_size": 6168,
   "image_version": 1,
-  "image_sha256": "ca374c4b9dbdf1a0879a8f19a74647e5592896dce5d245d7a97072fa33c03d39",
-  "manifest_signed_region": "464d425301003400182500000100000000000000ca374c4b9dbdf1a0879a8f19a74647e5592896dce5d245d7a97072fa33c03d39",
-  "signature_raw": "b3c573234f26a614264b7b39ae4dc1bfec4ecc62add8227c7c470de27ec2b772927aeb150ceea7d8a9f7e3fc3006d47a2b33cd0e2e1b674b9ee91351c709b966",
+  "image_sha256": "bdf7ef3cd8003fe655de40e93fdbd92869b04e8f4b7516725f478c50ec3f2fbd",
+  "manifest_signed_region": "464d425301003400181800000100000000000000bdf7ef3cd8003fe655de40e93fdbd92869b04e8f4b7516725f478c50ec3f2fbd",
+  "signature_raw": "78605e67f544b6532a467e9ce8f4052c5d6ab3be86ad6022221b5ad67a1a454f0848cb54fce7f95dcf765d76055ed61466342f0586fd35da51d75f4f95fa1989",
   "public_key_raw": "f84904d4e79289eee597c3dd75569be206938d93c61ff949530d047e478fb697c7f54f3b4219d1d6c371468615a8b0f347222180dd9b8e798ecffb69b02c2b4a"
 }

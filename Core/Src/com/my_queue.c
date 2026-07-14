@@ -14,7 +14,6 @@
 
 #include "my_queue.h"
 #include <stdlib.h>
-// #include "log.h"
 /// queue is full when tail+1 % size = head
 // queue is empty when head == tail
 
@@ -47,7 +46,6 @@ uint8_t queue_pop_byte(queue *mQueue, uint8_t *byte) // run on main
   *byte = mQueue->_buffer[mQueue->_head];
   mQueue->_head = (mQueue->_head + 1) % mQueue->_size;
   mQueue->_overwrite = 0;
-  // log_printf("Queue pop byte:head %d  tail %d \r\n", mQueue->_head, mQueue->_tail);
   return QUEUE_SUCCESS;
 }
 

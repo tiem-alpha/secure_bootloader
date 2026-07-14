@@ -57,13 +57,17 @@ python script\fota_uart_tool.py sign --firmware app.bin --key script\keys\secure
 
 The UART tool uses the bootloader protocol:
 
-- `UPDATE_BEGIN`: slot, image size, version, firmware SHA-256, raw ECDSA P-256
+- `UPDATE_BEGIN`: image size, version, firmware SHA-256, raw ECDSA P-256
   signature `r || s`.
-- `UPDATE_CHUNK`: offset plus data, default 200 bytes per chunk.
-- `UPDATE_END`: request bootloader verification and trial boot setup.
+- `UPDATE_CHUNK`: offset and data, default 200 bytes per chunk. The first
+  chunk must contain at least the first 8 firmware bytes.
+- `UPDATE_END`: requests bootloader verification and trial boot setup.
 - `RESET`: request a fresh bootloader session before update.
 
 Click `Start update` to send `RESET`, wait for the periodic `BOOT` status
-report, and transfer the signed firmware. If the application does not handle
-`RESET` and USB-UART DTR/RTS is not wired to the target reset/boot circuitry,
-reset the MCU manually after clicking `Start update`.
+report, and transfer the signed firmware. The PC tool does not send, choose,
+validate, or display a Flash slot; the bootloader infers the internal write
+region from the firmware vector table in the first chunk.
+If the application does not handle `RESET` and USB-UART DTR/RTS is not wired to
+the target reset/boot circuitry, reset the MCU manually after clicking
+`Start update`.

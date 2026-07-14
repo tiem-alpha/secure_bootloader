@@ -2,39 +2,17 @@
 
 #include <string.h>
 
+#include "boot_layout.h"
 #include "secure/crypto_manager.h"
 #include "platform/boot_platform.h"
 #include "log.h"
 
 /* Forward declaration used by boot_send_report(). */
-static void boot_send_report_for_slot(boot_controller_t *controller, uint8_t report,
-                                      uint8_t command, secure_boot_result_t result,
-                                      secure_boot_slot_t slot);
+static void boot_send_report_payload(boot_controller_t *controller, uint8_t report,
+                                     uint8_t command, secure_boot_result_t result);
 
 /**
- * @brief Log a firmware update slot in a readable form.
- *
- * @param[in] prefix Message prefix written before the slot name.
- * @param[in] slot Slot to print.
- */
-static void boot_log_update_slot(const char *prefix, secure_boot_slot_t slot)
-{
-    log_print(prefix);
-    switch (slot) {
-    case SECURE_BOOT_SLOT_APP1:
-        log_print("APP1(1)\r\n");
-        break;
-    case SECURE_BOOT_SLOT_APP2:
-        log_print("APP2(2)\r\n");
-        break;
-    default:
-        log_print("NONE/INVALID\r\n");
-        break;
-    }
-}
-
-/**
- * @brief Send a fixed-size UART report for the controller target slot.
+ * @brief Send a fixed-size UART report.
  *
  * @param[in] controller Controller instance. NULL is accepted and ignored.
  * @param[in] report Report type, one of `BOOT_UART_REPORT_*`.
@@ -46,17 +24,15 @@ static void boot_log_update_slot(const char *prefix, secure_boot_slot_t slot)
 static void boot_send_report(boot_controller_t *controller, uint8_t report,
                              uint8_t command, secure_boot_result_t result)
 {
-    boot_send_report_for_slot(controller, report, command, result,
-                              controller != NULL ? controller->target_slot
-                                                 : SECURE_BOOT_SLOT_NONE);
+    boot_send_report_payload(controller, report, command, result);
 }
 
 /**
- * @brief Build and queue a fixed-size UART report for an explicit slot.
+ * @brief Build and queue a fixed-size UART report.
  *
  * @details
  * The report payload includes controller state, secure boot result, persistent
- * status fields, target slot, transfer progress, and image version. If the
+ * status fields, transfer progress, and image version. If the
  * controller or communication manager is NULL, the function returns without
  * doing anything.
  *
@@ -65,14 +41,11 @@ static void boot_send_report(boot_controller_t *controller, uint8_t report,
  * @param[in] report Report type, one of `BOOT_UART_REPORT_*`.
  * @param[in] command Command associated with this report.
  * @param[in] result Secure boot result to encode in the report.
- * @param[in] slot Slot associated with this report.
- *
  * @post May call @ref secure_boot_get_status.
  * @post May queue one report payload through @ref comm_manager_send_data.
  */
-static void boot_send_report_for_slot(boot_controller_t *controller, uint8_t report,
-                                      uint8_t command, secure_boot_result_t result,
-                                      secure_boot_slot_t slot)
+static void boot_send_report_payload(boot_controller_t *controller, uint8_t report,
+                                     uint8_t command, secure_boot_result_t result)
 {
     uint8_t payload[BOOT_UART_REPORT_SIZE];
     uint16_t length = 0U;
@@ -85,7 +58,6 @@ static void boot_send_report_for_slot(boot_controller_t *controller, uint8_t rep
     (void)secure_boot_get_status(&status);
     if (boot_uart_build_report(payload, sizeof(payload), report, command,
                                (uint8_t)controller->state, result, &status,
-                               slot,
                                controller->received_image_size,
                                controller->expected_image_size,
                                controller->image_version, &length)) {
@@ -125,29 +97,102 @@ static void boot_reset_transfer(boot_controller_t *controller)
 }
 
 /**
- * @brief Check whether a slot is eligible to receive a new image.
+ * @brief Check whether the declared image size can fit in an application slot.
  *
  * @details
- * A slot can receive an update only when it is APP1 or APP2, the declared image
- * size is at least a vector table and fits before the slot manifest, and the
- * slot is not the currently confirmed slot.
+ * The image must be large enough to contain the initial vector table entries
+ * and small enough to fit before the slot manifest reservation.
  *
- * @param[in] slot Candidate target slot.
  * @param[in] image_size Declared firmware image size in bytes.
  *
- * @return true when the slot and image size are acceptable for UPDATE_BEGIN.
+ * @return true when the image size is acceptable for UPDATE_BEGIN.
  * @return false when the request should be rejected.
  */
-static bool boot_slot_can_receive_update(secure_boot_slot_t slot,
-                                         uint32_t image_size)
+static bool boot_image_size_is_valid(uint32_t image_size)
 {
-    secure_boot_status_t status;
+    return image_size >= 8U &&
+           image_size <= secure_boot_slot_max_image_size();
+}
 
-    (void)secure_boot_get_status(&status);
-    return (slot == SECURE_BOOT_SLOT_APP1 || slot == SECURE_BOOT_SLOT_APP2) &&
-           image_size >= 8U && image_size <= secure_boot_slot_max_image_size() &&
-           !(status.confirmed_slot == (uint32_t)slot &&
-             status.confirmed_slot != SECURE_BOOT_SLOT_NONE);
+/**
+ * @brief Select the Flash write target from the image vector table.
+ *
+ * @details
+ * The host does not send a slot. The first firmware chunk must start at offset
+ * zero and contain the initial MSP and reset handler. The reset handler address
+ * tells the bootloader which Flash region this image was linked for.
+ */
+static secure_boot_slot_t boot_select_target_from_vector(const uint8_t *data,
+                                                         uint16_t length,
+                                                         uint32_t image_size)
+{
+    uint32_t initial_msp;
+    uint32_t reset_handler;
+    uint32_t reset_address;
+
+    if (data == NULL || length < 8U || !boot_image_size_is_valid(image_size)) {
+        return SECURE_BOOT_SLOT_NONE;
+    }
+
+    initial_msp = boot_uart_read_u32_le(&data[0]);
+    reset_handler = boot_uart_read_u32_le(&data[4]);
+    reset_address = reset_handler & ~1UL;
+
+    if (initial_msp < BOOT_RAM_BASE || initial_msp > BOOT_RAM_END ||
+        (reset_handler & 1UL) == 0U) {
+        return SECURE_BOOT_SLOT_NONE;
+    }
+
+    if (reset_address >= BOOT_APP1_BASE &&
+        reset_address < (BOOT_APP1_BASE + image_size)) {
+        return SECURE_BOOT_SLOT_APP1;
+    }
+
+    if (reset_address >= BOOT_APP2_BASE &&
+        reset_address < (BOOT_APP2_BASE + image_size)) {
+        return SECURE_BOOT_SLOT_APP2;
+    }
+
+    return SECURE_BOOT_SLOT_NONE;
+}
+
+/**
+ * @brief Start Flash erase/write once the first image chunk identifies target.
+ */
+static bool boot_prepare_flash_target(boot_controller_t *controller,
+                                      const boot_uart_update_chunk_t *request)
+{
+    secure_boot_slot_t target_slot;
+
+    if (controller == NULL || request == NULL || request->offset != 0U) {
+        return false;
+    }
+
+    target_slot = boot_select_target_from_vector(
+        request->data, request->length, controller->expected_image_size);
+    if (target_slot == SECURE_BOOT_SLOT_NONE) {
+        log_print("FW rejected image vector table\r\n");
+        controller->last_result = SECURE_BOOT_ERROR_MANIFEST;
+        return false;
+    }
+
+    controller->last_result = secure_boot_begin_update(target_slot);
+    if (controller->last_result != SECURE_BOOT_OK) {
+        log_print("FW failed to mark update state\r\n");
+        return false;
+    }
+
+    if (!boot_flash_erase_slot(target_slot)) {
+        log_print("FW failed to erase image region\r\n");
+        controller->last_result = SECURE_BOOT_ERROR_FLASH;
+        (void)secure_boot_abort_update();
+        return false;
+    }
+
+    controller->target_slot = target_slot;
+    boot_flash_writer_begin(&controller->flash_writer, target_slot);
+    log_print("FW writing firmware\r\n");
+    return true;
 }
 
 /**
@@ -179,10 +224,9 @@ static void boot_schedule_boot(boot_controller_t *controller)
  * @brief Handle an UPDATE_BEGIN command.
  *
  * @details
- * Validates command shape and state, checks whether the target slot can be
- * updated, marks the persistent update state as receiving, erases the target
- * slot, copies host-provided image metadata, starts the Flash writer and
- * streaming SHA-256 context, then enters RECEIVING.
+ * Validates command shape and state, copies host-provided image metadata,
+ * starts the streaming SHA-256 context, then enters RECEIVING. The Flash
+ * target is selected from the first firmware chunk's vector table.
  *
  * @param[in,out] controller Controller instance. Must not be NULL.
  * @param[in] data Decoded UPDATE_BEGIN payload.
@@ -197,7 +241,7 @@ static void boot_begin_update(boot_controller_t *controller, const uint8_t *data
                               uint16_t length)
 {
     boot_uart_update_begin_t request;
-    log_print("boot_begin_update\n");
+
     if ((controller->state != BOOT_CONTROLLER_WAIT_UPDATE &&
          controller->state != BOOT_CONTROLLER_RECOVERY) ||
         !boot_uart_parse_update_begin(data, length, &request)) {
@@ -207,40 +251,21 @@ static void boot_begin_update(boot_controller_t *controller, const uint8_t *data
         return;
     }
 
-    boot_log_update_slot("FW UPDATE_BEGIN requested target slot=", request.slot);
-
-    if (!boot_slot_can_receive_update(request.slot, request.image_size)) {
-        boot_log_update_slot("FW rejected update target slot=", request.slot);
+    if (!boot_image_size_is_valid(request.image_size)) {
+        log_print("FW rejected invalid update size\r\n");
         controller->last_result = SECURE_BOOT_ERROR_STATE;
         boot_send_report(controller, BOOT_UART_REPORT_NACK,
-                         BOOT_UART_COMMAND_UPDATE_BEGIN, controller->last_result);
-        return;
-    }
-
-    controller->last_result = secure_boot_begin_update(request.slot);
-    if (controller->last_result != SECURE_BOOT_OK) {
-        boot_send_report(controller, BOOT_UART_REPORT_NACK,
-                         BOOT_UART_COMMAND_UPDATE_BEGIN, controller->last_result);
-        return;
-    }
-
-    if (!boot_flash_erase_slot(request.slot)) {
-        controller->last_result = SECURE_BOOT_ERROR_FLASH;
-        (void)secure_boot_abort_update();
-        boot_send_report(controller, BOOT_UART_REPORT_NACK,
-                         BOOT_UART_COMMAND_UPDATE_BEGIN, controller->last_result);
+                         BOOT_UART_COMMAND_UPDATE_BEGIN,
+                         controller->last_result);
         return;
     }
 
     boot_reset_transfer(controller);
-    controller->target_slot = request.slot;
     controller->expected_image_size = request.image_size;
     controller->image_version = request.image_version;
     memcpy(controller->expected_hash, request.image_sha256,
            sizeof(controller->expected_hash));
     memcpy(controller->signature, request.signature, sizeof(controller->signature));
-    boot_flash_writer_begin(&controller->flash_writer, request.slot);
-    boot_log_update_slot("FW writing firmware to slot=", controller->target_slot);
     sha256_init(&controller->image_hash);
     controller->state = BOOT_CONTROLLER_RECEIVING;
     custom_timer_start(&controller->state_timer, BOOT_UPDATE_TIMEOUT_MS);
@@ -254,7 +279,8 @@ static void boot_begin_update(boot_controller_t *controller, const uint8_t *data
  *
  * @details
  * Validates that the controller is receiving, parses the chunk payload, enforces
- * matching slot and exact sequential offset, writes chunk bytes to Flash,
+ * exact sequential offset, selects the Flash target from the first chunk when
+ * needed, writes chunk bytes to Flash,
  * updates the streaming SHA-256 digest, advances the received byte counter, and
  * refreshes the update timeout.
  *
@@ -279,12 +305,24 @@ static void boot_receive_chunk(boot_controller_t *controller, const uint8_t *dat
         return;
     }
 
-    if (request.slot != controller->target_slot ||
-        request.offset != controller->received_image_size ||
+    if (request.offset != controller->received_image_size ||
         request.length == 0U || request.length > BOOT_UART_MAX_CHUNK_SIZE ||
         request.length > controller->expected_image_size -
-                             controller->received_image_size ||
-        !boot_flash_writer_write(&controller->flash_writer, request.data,
+                             controller->received_image_size) {
+        controller->last_result = SECURE_BOOT_ERROR_FLASH;
+        boot_send_report(controller, BOOT_UART_REPORT_NACK,
+                         BOOT_UART_COMMAND_UPDATE_CHUNK, controller->last_result);
+        return;
+    }
+
+    if (controller->target_slot == SECURE_BOOT_SLOT_NONE &&
+        !boot_prepare_flash_target(controller, &request)) {
+        boot_send_report(controller, BOOT_UART_REPORT_NACK,
+                         BOOT_UART_COMMAND_UPDATE_CHUNK, controller->last_result);
+        return;
+    }
+
+    if (!boot_flash_writer_write(&controller->flash_writer, request.data,
                                  request.length)) {
         controller->last_result = SECURE_BOOT_ERROR_FLASH;
         boot_send_report(controller, BOOT_UART_REPORT_NACK,
@@ -328,13 +366,15 @@ static secure_boot_result_t boot_commit_verified_update(
 {
     secure_boot_manifest_t manifest;
     secure_boot_result_t result;
-    log_print("boot_commit_verified_update\n");
+    log_print("FW verifying received image\r\n");
     if (!boot_flash_writer_flush(&controller->flash_writer)) {
+        log_print("FW verify failed: flash flush\r\n");
         return SECURE_BOOT_ERROR_FLASH;
     }
     // check that the computed digest matches the expected hash from UPDATE_BEGIN
     if (!crypto_manager_constant_time_equal(digest, controller->expected_hash,
                                             SHA256_DIGEST_SIZE)) {
+        log_print("FW verify failed: streamed hash\r\n");
         return SECURE_BOOT_ERROR_HASH;
     }
     //check that the manifest can be built and signed correctly
@@ -342,11 +382,13 @@ static secure_boot_result_t boot_commit_verified_update(
                                               controller->image_version,
                                               controller->expected_hash,
                                               controller->signature, &manifest)) {
+        log_print("FW verify failed: manifest signature\r\n");
         return SECURE_BOOT_ERROR_SIGNATURE;
     }
     //check that the manifest can be written to flash correctly
     if (!boot_flash_write_manifest(controller->target_slot, &manifest)) {
         crypto_manager_secure_zero(&manifest, sizeof(manifest));
+        log_print("FW verify failed: manifest flash\r\n");
         return SECURE_BOOT_ERROR_FLASH;
     }
 
@@ -359,8 +401,8 @@ static secure_boot_result_t boot_commit_verified_update(
  * @brief Handle an UPDATE_END command.
  *
  * @details
- * Verifies that the declared slot matches the active transfer and that all
- * expected image bytes have been written, finalizes the streaming SHA-256 hash,
+ * Verifies that all expected image bytes have been written, finalizes the
+ * streaming SHA-256 hash,
  * commits the manifest/trial state through @ref boot_commit_verified_update,
  * and schedules boot when verification succeeds.
  *
@@ -378,11 +420,10 @@ static void boot_finish_update(boot_controller_t *controller, const uint8_t *dat
                                uint16_t length)
 {
     uint8_t digest[SHA256_DIGEST_SIZE];
-    secure_boot_slot_t slot;
-    log_print("boot_finish_update\n");
+    log_print("FW UPDATE_END received\r\n");
     if (controller->state != BOOT_CONTROLLER_RECEIVING ||
-        !boot_uart_parse_update_end(data, length, &slot) ||
-        slot != controller->target_slot ||
+        !boot_uart_parse_update_end(data, length) ||
+        controller->target_slot == SECURE_BOOT_SLOT_NONE ||
         controller->received_image_size != controller->expected_image_size ||
         controller->flash_writer.written_size != controller->received_image_size) {
         controller->last_result = SECURE_BOOT_ERROR_STATE;
@@ -397,6 +438,7 @@ static void boot_finish_update(boot_controller_t *controller, const uint8_t *dat
     crypto_manager_secure_zero(digest, sizeof(digest));
 
     if (controller->last_result != SECURE_BOOT_OK) {
+        log_print("FW update verification failed\r\n");
         controller->state = BOOT_CONTROLLER_RECOVERY;
         (void)secure_boot_abort_update();
         boot_send_report(controller, BOOT_UART_REPORT_NACK,
@@ -404,6 +446,7 @@ static void boot_finish_update(boot_controller_t *controller, const uint8_t *dat
         return;
     }
 
+    log_print("FW update verified; scheduling boot\r\n");
     boot_send_report(controller, BOOT_UART_REPORT_ACK, BOOT_UART_COMMAND_UPDATE_END,
                      SECURE_BOOT_OK);
     boot_schedule_boot(controller);
@@ -428,99 +471,6 @@ void boot_controller_init(boot_controller_t *controller, CommManager_t *comm)
                      BOOT_UART_COMMAND_STATUS, recovery_result);
 }
 
-/**
- * @brief Handle a VERIFY_SLOT command.
- *
- * @details
- * Rejects the command while an update is being received or verified. Otherwise,
- * parses the requested slot, asks the secure boot layer to verify it, and sends
- * ACK or NACK for the requested slot.
- *
- * @param[in,out] controller Controller instance. Must not be NULL.
- * @param[in] data Decoded VERIFY_SLOT payload.
- * @param[in] length Payload length in bytes.
- *
- * @post @p controller->last_result contains the verification result or argument
- *       or state error.
- * @post Queues ACK when the slot verifies successfully; otherwise queues NACK.
- */
-static void boot_verify_slot_command(boot_controller_t *controller,
-                                     const uint8_t *data, uint16_t length)
-{
-    secure_boot_slot_t slot;
-
-    if (controller->state == BOOT_CONTROLLER_RECEIVING ||
-        controller->state == BOOT_CONTROLLER_VERIFYING) {
-        controller->last_result = SECURE_BOOT_ERROR_STATE;
-        boot_send_report(controller, BOOT_UART_REPORT_NACK,
-                         BOOT_UART_COMMAND_VERIFY_SLOT, controller->last_result);
-        return;
-    }
-
-    if (!boot_uart_parse_slot_command(data, length, BOOT_UART_COMMAND_VERIFY_SLOT,
-                                      &slot)) {
-        controller->last_result = SECURE_BOOT_ERROR_ARGUMENT;
-        boot_send_report(controller, BOOT_UART_REPORT_NACK,
-                         BOOT_UART_COMMAND_VERIFY_SLOT, controller->last_result);
-        return;
-    }
-
-    controller->last_result = secure_boot_verify_slot(slot, NULL);
-    boot_send_report_for_slot(controller,
-                              controller->last_result == SECURE_BOOT_OK
-                                  ? BOOT_UART_REPORT_ACK
-                                  : BOOT_UART_REPORT_NACK,
-                              BOOT_UART_COMMAND_VERIFY_SLOT,
-                              controller->last_result, slot);
-}
-
-/**
- * @brief Handle a CONFIRM_SLOT command.
- *
- * @details
- * Rejects the command while an update is being received or verified. Otherwise,
- * parses the requested slot, asks the secure boot layer to confirm it as the
- * running healthy image, and sends ACK or NACK for the requested slot.
- *
- * @param[in,out] controller Controller instance. Must not be NULL.
- * @param[in] data Decoded CONFIRM_SLOT payload.
- * @param[in] length Payload length in bytes.
- *
- * @post @p controller->last_result contains the confirmation result or argument
- *       or state error.
- * @post Queues ACK when the slot is confirmed successfully; otherwise queues
- *       NACK.
- */
-static void boot_confirm_slot_command(boot_controller_t *controller,
-                                      const uint8_t *data, uint16_t length)
-{
-    secure_boot_slot_t slot;
-
-    if (controller->state == BOOT_CONTROLLER_RECEIVING ||
-        controller->state == BOOT_CONTROLLER_VERIFYING) {
-        controller->last_result = SECURE_BOOT_ERROR_STATE;
-        boot_send_report(controller, BOOT_UART_REPORT_NACK,
-                         BOOT_UART_COMMAND_CONFIRM_SLOT, controller->last_result);
-        return;
-    }
-
-    if (!boot_uart_parse_slot_command(data, length, BOOT_UART_COMMAND_CONFIRM_SLOT,
-                                      &slot)) {
-        controller->last_result = SECURE_BOOT_ERROR_ARGUMENT;
-        boot_send_report(controller, BOOT_UART_REPORT_NACK,
-                         BOOT_UART_COMMAND_CONFIRM_SLOT, controller->last_result);
-        return;
-    }
-
-    controller->last_result = secure_boot_confirm_running_image(slot);
-    boot_send_report_for_slot(controller,
-                              controller->last_result == SECURE_BOOT_OK
-                                  ? BOOT_UART_REPORT_ACK
-                                  : BOOT_UART_REPORT_NACK,
-                              BOOT_UART_COMMAND_CONFIRM_SLOT,
-                              controller->last_result, slot);
-}
-
 void boot_controller_on_packet(boot_controller_t *controller, uint8_t *data,
                                uint16_t length)
 {
@@ -530,16 +480,10 @@ void boot_controller_on_packet(boot_controller_t *controller, uint8_t *data,
 
     switch (data[0]) {
     case BOOT_UART_COMMAND_STATUS:
-        log_print("BOOT_UART_COMMAND_STATUS\n");
         boot_send_report(controller, BOOT_UART_REPORT_STATUS,
                          BOOT_UART_COMMAND_STATUS, controller->last_result);
         break;
-    case BOOT_UART_COMMAND_VERIFY_SLOT:
-        log_print("BOOT_UART_COMMAND_VERIFY_SLOT\n");
-        boot_verify_slot_command(controller, data, length);
-        break;
     case BOOT_UART_COMMAND_BOOT_NOW:
-        log_print("BOOT_UART_COMMAND_BOOT_NOW\n");
         if (length != 1U || controller->state == BOOT_CONTROLLER_RECEIVING ||
             controller->state == BOOT_CONTROLLER_VERIFYING) {
             controller->last_result = SECURE_BOOT_ERROR_STATE;
@@ -553,7 +497,6 @@ void boot_controller_on_packet(boot_controller_t *controller, uint8_t *data,
         boot_schedule_boot(controller);
         break;
     case BOOT_UART_COMMAND_RESET:
-        log_print("BOOT_UART_COMMAND_RESET\n");
         if (length != 1U || controller->state == BOOT_CONTROLLER_RECEIVING ||
             controller->state == BOOT_CONTROLLER_VERIFYING) {
             controller->last_result = SECURE_BOOT_ERROR_STATE;
@@ -564,19 +507,16 @@ void boot_controller_on_packet(boot_controller_t *controller, uint8_t *data,
         boot_platform_system_reset();
         break;
     case BOOT_UART_COMMAND_UPDATE_BEGIN:
-        log_print("BOOT_UART_COMMAND_UPDATE_BEGIN\n");
         boot_begin_update(controller, data, length);
         break;
     case BOOT_UART_COMMAND_UPDATE_CHUNK:
-        log_print("BOOT_UART_COMMAND_UPDATE_CHUNK\n");
         boot_receive_chunk(controller, data, length);
         break;
     case BOOT_UART_COMMAND_UPDATE_END:
-        log_print("BOOT_UART_COMMAND_UPDATE_END\n");
         boot_finish_update(controller, data, length);
         break;
     case BOOT_UART_COMMAND_UPDATE_ABORT:
-        log_print("BOOT_UART_COMMAND_UPDATE_ABORT\n");
+        log_print("FW update aborted by host\r\n");
         boot_reset_transfer(controller);
         (void)secure_boot_abort_update();
         controller->state = BOOT_CONTROLLER_RECOVERY;
@@ -584,12 +524,8 @@ void boot_controller_on_packet(boot_controller_t *controller, uint8_t *data,
         boot_send_report(controller, BOOT_UART_REPORT_ACK,
                          BOOT_UART_COMMAND_UPDATE_ABORT, SECURE_BOOT_OK);
         break;
-    case BOOT_UART_COMMAND_CONFIRM_SLOT:
-        log_print("BOOT_UART_COMMAND_CONFIRM_SLOT\n");
-        boot_confirm_slot_command(controller, data, length);
-        break;
     default:
-        log_print("BOOT_UART_COMMAND_UNKNOWN\n");
+        log_print("FW unknown UART command\r\n");
         controller->last_result = SECURE_BOOT_ERROR_ARGUMENT;
         boot_send_report(controller, BOOT_UART_REPORT_NACK, data[0],
                          controller->last_result);
@@ -604,6 +540,7 @@ void boot_controller_on_parser_error(boot_controller_t *controller, uint8_t erro
     }
 
     controller->last_result = SECURE_BOOT_ERROR_ARGUMENT;
+    log_print("FW UART parser error\r\n");
     boot_send_report(controller, BOOT_UART_REPORT_NACK, error,
                      controller->last_result);
 }

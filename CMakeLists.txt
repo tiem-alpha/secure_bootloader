@@ -28,6 +28,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 project(${CMAKE_PROJECT_NAME})
 message("Build type: " ${CMAKE_BUILD_TYPE})
 
+option(BOOT_ENABLE_RTT_LOG "Enable SEGGER RTT debug logging" ON)
+
 # Enable CMake support for ASM and C languages
 enable_language(C ASM)
 
@@ -47,7 +49,6 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/main.c
     Core/Src/com/crc16.c
     Core/Src/log/log.c
-    Core/Src/log/SEGGER_RTT.c
     Core/Src/com/my_packer.c
     Core/Src/com/packer.c
     Core/Src/com/comm_manager.c
@@ -65,6 +66,15 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/boot_controller.c
     # Add user sources here
 )
+
+if(BOOT_ENABLE_RTT_LOG)
+    target_sources(${CMAKE_PROJECT_NAME} PRIVATE
+        Core/Src/log/SEGGER_RTT.c
+    )
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
+        BOOT_LOG_ENABLE
+    )
+endif()
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE

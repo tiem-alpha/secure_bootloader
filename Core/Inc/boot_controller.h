@@ -75,17 +75,16 @@ typedef enum {
     /**
      * Waiting for host commands before falling through to application boot.
      *
-     * Accepted commands include STATUS, VERIFY_SLOT, BOOT_NOW, RESET,
-     * UPDATE_BEGIN, UPDATE_ABORT, and CONFIRM_SLOT. If no update command
-     * arrives before @ref BOOT_STARTUP_TIMEOUT_MS, boot is scheduled
-     * automatically.
+     * Accepted commands include STATUS, BOOT_NOW, RESET, UPDATE_BEGIN, and
+     * UPDATE_ABORT. If no update command arrives before
+     * @ref BOOT_STARTUP_TIMEOUT_MS, boot is scheduled automatically.
      */
     BOOT_CONTROLLER_WAIT_UPDATE = 0,
     /**
-     * Receiving firmware chunks and writing them to the target slot.
+     * Receiving firmware chunks and writing them to the internal Flash target.
      *
      * Only UPDATE_CHUNK, UPDATE_END, UPDATE_ABORT, and STATUS are meaningful in
-     * this state. Slot, offset, length, Flash write, and timeout checks are
+     * this state. Offset, length, Flash write, and timeout checks are
      * enforced by the controller.
      */
     BOOT_CONTROLLER_RECEIVING,
@@ -142,7 +141,7 @@ typedef struct {
     uint32_t received_image_size;
     /** Image version declared by UPDATE_BEGIN and copied into the manifest. */
     uint32_t image_version;
-    /** Slot currently targeted by an update, or SECURE_BOOT_SLOT_NONE. */
+    /** Internal Flash target for the current update, or SECURE_BOOT_SLOT_NONE. */
     secure_boot_slot_t target_slot;
     /** Expected SHA-256 digest received from the host. */
     uint8_t expected_hash[SHA256_DIGEST_SIZE];
@@ -227,29 +226,27 @@ void boot_controller_poll(boot_controller_t *controller);
  *
  * Supported commands and effects:
  * - STATUS: queue a STATUS report with current state and persistent boot status.
- * - VERIFY_SLOT: verify one slot when not receiving/verifying an update.
  * - BOOT_NOW: schedule immediate application boot when not receiving/verifying.
  * - RESET: request a system reset when not receiving/verifying an update.
- * - UPDATE_BEGIN: validate target slot and declared image metadata, mark update
- *   in progress, erase the target slot, and enter RECEIVING.
- * - UPDATE_CHUNK: require matching slot and exact sequential offset, write data
- *   to Flash, update streaming SHA-256, and refresh receive timeout.
+ * - UPDATE_BEGIN: validate declared image metadata and enter RECEIVING.
+ * - UPDATE_CHUNK: require exact sequential offset, select the Flash target from
+ *   the image vector table on the first chunk, write data to Flash, update
+ *   streaming SHA-256, and refresh receive timeout.
  * - UPDATE_END: require full image length, finalize Flash write, compare image
  *   hash, write signed manifest, request trial boot, and schedule boot.
  * - UPDATE_ABORT: clear transfer state, abort persistent update marker, and
  *   enter RECOVERY.
- * - CONFIRM_SLOT: confirm a trial slot when not receiving/verifying.
  *
- * Malformed payloads, invalid states, unsupported slots, Flash errors, hash
- * errors, signature errors, and rollback errors are reported as NACK with the
- * relevant @ref secure_boot_result_t value.
+ * Malformed payloads, invalid states, Flash errors, hash errors, signature
+ * errors, and rollback errors are reported as NACK with the relevant
+ * @ref secure_boot_result_t value.
  *
  * @param[in,out] controller Controller instance. NULL is accepted and ignored.
  * @param[in] data Payload buffer. `data[0]` must contain the command ID. NULL is
  *                 accepted and ignored.
  * @param[in] length Payload length in bytes. A value of 0 is ignored.
  *
- * @post May update transfer counters, target slot, expected hash/signature,
+ * @post May update transfer counters, internal Flash target, expected hash/signature,
  *       Flash writer state, controller state, and last result.
  * @post Queues ACK, NACK, STATUS, or JUMP reports depending on the command.
  *

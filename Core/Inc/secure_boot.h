@@ -211,11 +211,30 @@ secure_boot_result_t secure_boot_get_status(secure_boot_status_t *status);
 secure_boot_result_t secure_boot_recover_interrupted_update(void);
 
 /**
- * @brief Mark a slot update as in progress before erase/write begins.
+ * @brief Select the Flash slot that should receive a new update.
+ *
+ * @details
+ * When the bootloader can identify an active or fallback application slot, the
+ * opposite slot is selected so the running image is not erased. If a trial
+ * image is active while a different confirmed rollback slot exists, no safe
+ * update slot is available with the two-slot layout and the request is
+ * rejected. When no active image can be identified, APP1 is selected.
+ *
+ * @param[out] selected_slot Slot selected by secure boot policy.
+ *
+ * @return SECURE_BOOT_OK when a target slot was selected.
+ * @return SECURE_BOOT_ERROR_ARGUMENT for invalid arguments.
+ * @return SECURE_BOOT_ERROR_STATE when no inactive update slot is available.
+ */
+secure_boot_result_t secure_boot_select_update_slot(
+    secure_boot_slot_t *selected_slot);
+
+/**
+ * @brief Mark an internal Flash target update as in progress before erase/write.
  *
  * This marker allows the next boot to detect power loss during FOTA.
  *
- * @param[in] slot Slot about to be erased and updated.
+ * @param[in] slot Internal Flash target about to be erased and updated.
  *
  * @return SECURE_BOOT_OK on successful status persistence.
  */

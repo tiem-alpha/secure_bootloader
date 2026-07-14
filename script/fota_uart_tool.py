@@ -2,7 +2,6 @@ import argparse
 import datetime as dt
 import hashlib
 import json
-import os
 import struct
 import threading
 import time
@@ -31,8 +30,6 @@ CMD_RESET = 0x04
 CMD_UPDATE_BEGIN = 0x10
 CMD_UPDATE_CHUNK = 0x11
 CMD_UPDATE_END = 0x12
-CMD_UPDATE_ABORT = 0x13
-CMD_CONFIRM_SLOT = 0x14
 
 REPORT_STATUS = 0x80
 REPORT_ACK = 0x81
@@ -45,6 +42,19 @@ SECURE_BOOT_MANIFEST_VERSION = 1
 SECURE_BOOT_MANIFEST_SIGNED_SIZE = 52
 
 DEFAULT_CHUNK_SIZE = 200
+MIN_CHUNK_SIZE = 8
+
+RESULT_NAMES = {
+    0: "OK",
+    1: "ARGUMENT",
+    2: "NO_VALID_IMAGE",
+    3: "MANIFEST",
+    4: "HASH",
+    5: "SIGNATURE",
+    6: "ROLLBACK",
+    7: "FLASH",
+    8: "STATE",
+}
 
 
 def crc16_mcrf4xx(data: bytes) -> int:
@@ -67,6 +77,10 @@ def pack_frame(payload: bytes) -> bytes:
     crc_input = header[1:] + payload
     crc = crc16_mcrf4xx(crc_input)
     return header + payload + struct.pack(">H", crc) + bytes([PACK_END])
+
+
+def result_name(value: int) -> str:
+    return RESULT_NAMES.get(value, f"UNKNOWN_{value}")
 
 
 class FrameReader:
@@ -230,9 +244,6 @@ def parse_report(payload: bytes) -> dict:
         "command": payload[1],
         "controller_state": payload[2],
         "result": payload[3],
-        "confirmed_slot": payload[4],
-        "trial_slot": payload[5],
-        "target_slot": payload[6],
         "update_state": payload[7],
         "received_size": struct.unpack_from("<I", payload, 8)[0],
         "expected_size": struct.unpack_from("<I", payload, 12)[0],
@@ -255,7 +266,7 @@ class FotaClient:
     def __init__(self, port: str, baudrate: int, logger):
         if serial is None:
             raise RuntimeError("pyserial is not installed. Run: python -m pip install -r script/requirements.txt")
-        self.ser = serial.Serial(port, baudrate=baudrate, timeout=0.05, write_timeout=2)
+        self.ser = serial.Serial(port, baudrate=baudrate, timeout=0.01, write_timeout=2)
         self.reader = FrameReader(self.ser)
         self.log = logger
 
@@ -302,8 +313,9 @@ class FotaClient:
             if report.get("valid"):
                 self.log(
                     f"RX {report_name(report['report'])} cmd=0x{report['command']:02X} "
-                    f"result={report['result']} rx={report['received_size']}/{report['expected_size']} "
-                    f"slot={report['target_slot']} update_state={report['update_state']}"
+                    f"result={report['result']}({result_name(report['result'])}) "
+                    f"rx={report['received_size']}/{report['expected_size']} "
+                    f"update_state={report['update_state']}"
                 )
                 if command is None or report["command"] == command:
                     return report
@@ -318,7 +330,10 @@ class FotaClient:
         self.send_payload(payload)
         report = self.wait_report(command=command, timeout_s=timeout_s)
         if report["report"] != REPORT_ACK or report["result"] != 0:
-            raise RuntimeError(f"Command 0x{command:02X} failed: {report}")
+            raise RuntimeError(
+                f"Command 0x{command:02X} failed: "
+                f"{result_name(report['result'])} ({report})"
+            )
         return report
 
     def wait_boot(self, timeout_s: float):
@@ -329,31 +344,43 @@ class FotaClient:
                 return report
         raise TimeoutError("Boot report not received")
 
-    def transfer(self, signed: dict, slot: int, chunk_size: int, delay_s: float):
+    def transfer(
+        self,
+        signed: dict,
+        chunk_size: int,
+        delay_s: float,
+    ):
         firmware = Path(signed["firmware_path"]).read_bytes()
         image_hash = bytes.fromhex(signed["image_sha256"])
         signature = bytes.fromhex(signed["signature_raw"])
         begin = (
-            bytes([CMD_UPDATE_BEGIN, slot])
+            bytes([CMD_UPDATE_BEGIN])
             + struct.pack("<I", signed["image_size"])
             + struct.pack("<I", signed["image_version"])
             + image_hash
             + signature
         )
-        if len(begin) != 106:
+        if len(begin) != 105:
             raise ValueError(f"Internal error: update begin length is {len(begin)}")
 
-        self.send_command_expect_ack(begin, timeout_s=8.0)
+        begin_report = self.send_command_expect_ack(begin, timeout_s=8.0)
+        if begin_report["expected_size"] != signed["image_size"]:
+            raise RuntimeError(
+                f"Bootloader expected size {begin_report['expected_size']} "
+                f"does not match firmware size {signed['image_size']}"
+            )
+        self.log("Bootloader accepted update")
+
         for offset in range(0, len(firmware), chunk_size):
             chunk = firmware[offset : offset + chunk_size]
-            payload = bytes([CMD_UPDATE_CHUNK, slot]) + struct.pack("<I", offset) + chunk
+            payload = bytes([CMD_UPDATE_CHUNK]) + struct.pack("<I", offset) + chunk
             report = self.send_command_expect_ack(payload, timeout_s=5.0)
             self.log(f"Chunk {offset + len(chunk)}/{len(firmware)} ACK")
             if delay_s > 0:
                 time.sleep(delay_s)
             if report["received_size"] != offset + len(chunk):
                 self.log("Warning: report received_size does not match host offset")
-        self.send_command_expect_ack(bytes([CMD_UPDATE_END, slot]), timeout_s=12.0)
+        self.send_command_expect_ack(bytes([CMD_UPDATE_END]), timeout_s=12.0)
 
 
 class FotaToolGui:
@@ -373,7 +400,6 @@ class FotaToolGui:
         self.cert_path = tk.StringVar()
         self.fw_path = tk.StringVar()
         self.version = tk.StringVar(value="1")
-        self.slot = tk.IntVar(value=1)
         self.port = tk.StringVar()
         self.baud = tk.StringVar(value="115200")
         self.reset_mode = tk.StringVar(value="none")
@@ -388,10 +414,6 @@ class FotaToolGui:
         controls.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0))
         ttk.Label(controls, text="Version").pack(side="left")
         ttk.Entry(controls, textvariable=self.version, width=10).pack(side="left", padx=(4, 12))
-        ttk.Label(controls, text="Slot").pack(side="left")
-        ttk.Combobox(controls, textvariable=self.slot, values=[1, 2], width=5, state="readonly").pack(
-            side="left", padx=(4, 12)
-        )
         ttk.Button(controls, text="Gen key/cert", command=self.generate_key_cert).pack(side="left")
         ttk.Button(controls, text="Sign firmware", command=self.sign_firmware).pack(side="left", padx=(8, 0))
         ttk.Button(controls, text="Save signed info", command=self.save_signed_info).pack(side="left", padx=(8, 0))
@@ -518,17 +540,16 @@ class FotaToolGui:
             try:
                 if self.signed is None:
                     self.signed = sign_firmware(self.fw_path.get(), self.key_path.get(), int(self.version.get(), 0))
-                slot = int(self.slot.get())
                 chunk = int(self.chunk_size.get(), 0)
-                if not 1 <= chunk <= DEFAULT_CHUNK_SIZE:
-                    raise ValueError(f"Chunk must be 1..{DEFAULT_CHUNK_SIZE}")
+                if not MIN_CHUNK_SIZE <= chunk <= DEFAULT_CHUNK_SIZE:
+                    raise ValueError(f"Chunk must be {MIN_CHUNK_SIZE}..{DEFAULT_CHUNK_SIZE}")
                 delay_s = int(self.chunk_delay_ms.get(), 0) / 1000.0
                 client = self.make_client()
                 client.reset_target(self.reset_mode.get())
                 self.log("Waiting BOOT status. If reset is not wired, press MCU reset now.")
                 client.wait_boot(timeout_s=8.0)
                 self.log("BOOT status received; starting firmware update")
-                client.transfer(self.signed, slot, chunk, delay_s)
+                client.transfer(self.signed, chunk, delay_s)
                 self.log("FOTA transfer complete")
             except Exception as exc:
                 self.log(f"ERROR: {exc}")

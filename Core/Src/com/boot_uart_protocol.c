@@ -28,11 +28,10 @@ bool boot_uart_parse_update_begin(const uint8_t *payload, uint16_t length,
         return false;
     }
 
-    request->slot = (secure_boot_slot_t)payload[1];
-    request->image_size = boot_uart_read_u32_le(&payload[2]);
-    request->image_version = boot_uart_read_u32_le(&payload[6]);
-    request->image_sha256 = &payload[10];
-    request->signature = &payload[42];
+    request->image_size = boot_uart_read_u32_le(&payload[1]);
+    request->image_version = boot_uart_read_u32_le(&payload[5]);
+    request->image_sha256 = &payload[9];
+    request->signature = &payload[41];
     return true;
 }
 
@@ -40,42 +39,25 @@ bool boot_uart_parse_update_begin(const uint8_t *payload, uint16_t length,
 bool boot_uart_parse_update_chunk(const uint8_t *payload, uint16_t length,
                                   boot_uart_update_chunk_t *request)
 {
-    if (payload == NULL || request == NULL || length < 7U ||
+    if (payload == NULL || request == NULL || length < 6U ||
         payload[0] != BOOT_UART_COMMAND_UPDATE_CHUNK) {
         return false;
     }
 
-    request->slot = (secure_boot_slot_t)payload[1];
-    request->offset = boot_uart_read_u32_le(&payload[2]);
-    request->data = &payload[6];
-    request->length = length - 6U;
+    request->offset = boot_uart_read_u32_le(&payload[1]);
+    request->data = &payload[5];
+    request->length = length - 5U;
     return true;
 }
 
 /** @copydoc boot_uart_parse_update_end */
-bool boot_uart_parse_update_end(const uint8_t *payload, uint16_t length,
-                                secure_boot_slot_t *slot)
+bool boot_uart_parse_update_end(const uint8_t *payload, uint16_t length)
 {
-    if (payload == NULL || slot == NULL ||
-        length != BOOT_UART_UPDATE_END_SIZE ||
+    if (payload == NULL || length != BOOT_UART_UPDATE_END_SIZE ||
         payload[0] != BOOT_UART_COMMAND_UPDATE_END) {
         return false;
     }
 
-    *slot = (secure_boot_slot_t)payload[1];
-    return true;
-}
-
-/** @copydoc boot_uart_parse_slot_command */
-bool boot_uart_parse_slot_command(const uint8_t *payload, uint16_t length,
-                                  uint8_t command, secure_boot_slot_t *slot)
-{
-    if (payload == NULL || slot == NULL || length != 2U ||
-        payload[0] != command) {
-        return false;
-    }
-
-    *slot = (secure_boot_slot_t)payload[1];
     return true;
 }
 
@@ -84,7 +66,6 @@ bool boot_uart_build_report(uint8_t *payload, uint16_t capacity, uint8_t report,
                             uint8_t command, uint8_t controller_state,
                             secure_boot_result_t result,
                             const secure_boot_status_t *status,
-                            secure_boot_slot_t target_slot,
                             uint32_t received_image_size,
                             uint32_t expected_image_size,
                             uint32_t image_version,
@@ -99,9 +80,9 @@ bool boot_uart_build_report(uint8_t *payload, uint16_t capacity, uint8_t report,
     payload[1] = command;
     payload[2] = controller_state;
     payload[3] = (uint8_t)result;
-    payload[4] = (uint8_t)status->confirmed_slot;
-    payload[5] = (uint8_t)status->trial_slot;
-    payload[6] = (uint8_t)target_slot;
+    payload[4] = 0U;
+    payload[5] = 0U;
+    payload[6] = 0U;
     payload[7] = (uint8_t)status->update_state;
     boot_uart_write_u32_le(&payload[8], received_image_size);
     boot_uart_write_u32_le(&payload[12], expected_image_size);

@@ -61,8 +61,9 @@ The UART tool uses the bootloader protocol:
   signature `r || s`.
 - `UPDATE_CHUNK`: offset plus data, default 200 bytes per chunk.
 - `UPDATE_END`: request bootloader verification and trial boot setup.
-- `VERIFY_SLOT`, `BOOT_NOW`, and `STATUS` for debug.
+- `RESET`: request a fresh bootloader session before update.
 
-`Reset/wait boot` can reset the target automatically only when USB-UART DTR/RTS
-is wired to the target reset/boot circuitry. Otherwise, reset the MCU manually
-and let the tool wait for the `BOOT` report.
+Click `Start update` to send `RESET`, wait for the periodic `BOOT` status
+report, and transfer the signed firmware. If the application does not handle
+`RESET` and USB-UART DTR/RTS is not wired to the target reset/boot circuitry,
+reset the MCU manually after clicking `Start update`.

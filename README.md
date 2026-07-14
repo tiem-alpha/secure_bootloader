@@ -342,6 +342,7 @@ CRC is CRC-16/MCRF4XX over `len_hi`, `len_lo`, and `payload`.
 | `STATUS`       | `0x01` | `[cmd]`                                                               |
 | `VERIFY_SLOT`  | `0x02` | `[cmd, slot]`                                                         |
 | `BOOT_NOW`     | `0x03` | `[cmd]`                                                               |
+| `RESET`        | `0x04` | `[cmd]`                                                               |
 | `UPDATE_BEGIN` | `0x10` | `[cmd, slot, image_size u32, version u32, sha256 32B, signature 64B]` |
 | `UPDATE_CHUNK` | `0x11` | `[cmd, slot, offset u32, data...]`                                    |
 | `UPDATE_END`   | `0x12` | `[cmd, slot]`                                                         |
@@ -382,8 +383,8 @@ Report payload is 20 bytes:
 
 Coordinates bootloader runtime behavior:
 
-- Sends the `BOOT` report at startup.
-- Waits for FOTA during `BOOT_STARTUP_TIMEOUT_MS`.
+- Sends the `BOOT` report at startup and every 500 ms while waiting for FOTA.
+- Waits 4 seconds for FOTA during `BOOT_STARTUP_TIMEOUT_MS`.
 - Receives `UPDATE_BEGIN/CHUNK/END`.
 - Calls the Flash writer to write the image.
 - Calls crypto helpers to verify hash and signature.
@@ -620,20 +621,14 @@ In the GUI:
 3. Select version and slot.
 4. Select COM port and baudrate.
 5. Click `Sign firmware`.
-6. Reset the MCU into the bootloader.
-7. Click `Transfer signed FW`.
+6. Click `Start update`.
+7. The tool sends `RESET`, waits for a `BOOT` status report, then transfers the
+   signed firmware.
 8. After `UPDATE_END` succeeds, the bootloader sends `JUMP` and starts the app.
 
-If DTR/RTS is not wired to the reset/boot pins, select reset mode `none` and
-reset the MCU manually.
-
-### 6. Verify and boot
-
-Debug buttons in the GUI:
-
-- `Status`: read the current status report.
-- `Verify slot`: ask the bootloader to verify a slot.
-- `Boot now`: ask the bootloader to boot a valid application immediately.
+If the application does not handle the `RESET` command and DTR/RTS is not wired
+to the reset/boot pins, select reset mode `none` and reset the MCU manually
+after clicking `Start update`.
 
 ## Security Notes
 
@@ -647,4 +642,3 @@ Debug buttons in the GUI:
 - Never ship a product with the default all-zero public key.
 
 ## Improvements
-

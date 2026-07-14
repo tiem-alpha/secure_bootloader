@@ -23,6 +23,8 @@ extern "C" {
 #define BOOT_UART_COMMAND_VERIFY_SLOT  0x02U
 /** Request immediate application boot. Payload: [cmd]. */
 #define BOOT_UART_COMMAND_BOOT_NOW     0x03U
+/** Reset the target into a fresh bootloader session. Payload: [cmd]. */
+#define BOOT_UART_COMMAND_RESET        0x04U
 /** Start a firmware update. Payload size is BOOT_UART_UPDATE_BEGIN_SIZE. */
 #define BOOT_UART_COMMAND_UPDATE_BEGIN 0x10U
 /** Transfer one firmware chunk. Payload: [cmd, slot, offset_le32, data...]. */

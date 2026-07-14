@@ -3,31 +3,35 @@
 #include <string.h>
 
 #include "secure/crypto_manager.h"
-#include "stm32f1xx_hal.h"
+#include "platform/boot_platform.h"
 #include "log.h"
-
-/**
- * @brief Check whether a HAL tick deadline has expired.
- *
- * @details
- * Uses signed subtraction so the comparison remains valid across 32-bit HAL
- * tick wraparound.
- *
- * @param[in] now Current HAL tick value.
- * @param[in] deadline Absolute HAL tick deadline to compare against.
- *
- * @return true when @p now is equal to or later than @p deadline.
- * @return false when the deadline is still in the future.
- */
-static bool boot_timeout_elapsed(uint32_t now, uint32_t deadline)
-{
-    return (int32_t)(now - deadline) >= 0;
-}
 
 /* Forward declaration used by boot_send_report(). */
 static void boot_send_report_for_slot(boot_controller_t *controller, uint8_t report,
                                       uint8_t command, secure_boot_result_t result,
                                       secure_boot_slot_t slot);
+
+/**
+ * @brief Log a firmware update slot in a readable form.
+ *
+ * @param[in] prefix Message prefix written before the slot name.
+ * @param[in] slot Slot to print.
+ */
+static void boot_log_update_slot(const char *prefix, secure_boot_slot_t slot)
+{
+    log_print(prefix);
+    switch (slot) {
+    case SECURE_BOOT_SLOT_APP1:
+        log_print("APP1(1)\r\n");
+        break;
+    case SECURE_BOOT_SLOT_APP2:
+        log_print("APP2(2)\r\n");
+        break;
+    default:
+        log_print("NONE/INVALID\r\n");
+        break;
+    }
+}
 
 /**
  * @brief Send a fixed-size UART report for the controller target slot.
@@ -157,18 +161,16 @@ static bool boot_slot_can_receive_update(secure_boot_slot_t slot,
  * @param[in,out] controller Controller instance. Must not be NULL.
  *
  * @post @p controller->state is @ref BOOT_CONTROLLER_BOOT_PENDING.
- * @post @p controller->deadline_ms is set to now + @ref BOOT_JUMP_DELAY_MS.
- * @post @p controller->force_boot_deadline_ms is set to now +
+ * @post @p controller->state_timer is started for @ref BOOT_JUMP_DELAY_MS.
+ * @post @p controller->force_boot_timer is started for
  *       @ref BOOT_JUMP_MAX_WAIT_MS.
  * @post Queues a JUMP report when communication is available.
  */
 static void boot_schedule_boot(boot_controller_t *controller)
 {
-    uint32_t now = HAL_GetTick();
-
     controller->state = BOOT_CONTROLLER_BOOT_PENDING;
-    controller->deadline_ms = now + BOOT_JUMP_DELAY_MS;
-    controller->force_boot_deadline_ms = now + BOOT_JUMP_MAX_WAIT_MS;
+    custom_timer_start(&controller->state_timer, BOOT_JUMP_DELAY_MS);
+    custom_timer_start(&controller->force_boot_timer, BOOT_JUMP_MAX_WAIT_MS);
     boot_send_report(controller, BOOT_UART_REPORT_JUMP,
                      BOOT_UART_COMMAND_STATUS, controller->last_result);
 }
@@ -195,7 +197,7 @@ static void boot_begin_update(boot_controller_t *controller, const uint8_t *data
                               uint16_t length)
 {
     boot_uart_update_begin_t request;
-
+    log_print("boot_begin_update\n");
     if ((controller->state != BOOT_CONTROLLER_WAIT_UPDATE &&
          controller->state != BOOT_CONTROLLER_RECOVERY) ||
         !boot_uart_parse_update_begin(data, length, &request)) {
@@ -205,7 +207,10 @@ static void boot_begin_update(boot_controller_t *controller, const uint8_t *data
         return;
     }
 
+    boot_log_update_slot("FW UPDATE_BEGIN requested target slot=", request.slot);
+
     if (!boot_slot_can_receive_update(request.slot, request.image_size)) {
+        boot_log_update_slot("FW rejected update target slot=", request.slot);
         controller->last_result = SECURE_BOOT_ERROR_STATE;
         boot_send_report(controller, BOOT_UART_REPORT_NACK,
                          BOOT_UART_COMMAND_UPDATE_BEGIN, controller->last_result);
@@ -235,9 +240,10 @@ static void boot_begin_update(boot_controller_t *controller, const uint8_t *data
            sizeof(controller->expected_hash));
     memcpy(controller->signature, request.signature, sizeof(controller->signature));
     boot_flash_writer_begin(&controller->flash_writer, request.slot);
+    boot_log_update_slot("FW writing firmware to slot=", controller->target_slot);
     sha256_init(&controller->image_hash);
     controller->state = BOOT_CONTROLLER_RECEIVING;
-    controller->deadline_ms = HAL_GetTick() + BOOT_UPDATE_TIMEOUT_MS;
+    custom_timer_start(&controller->state_timer, BOOT_UPDATE_TIMEOUT_MS);
     controller->last_result = SECURE_BOOT_OK;
     boot_send_report(controller, BOOT_UART_REPORT_ACK, BOOT_UART_COMMAND_UPDATE_BEGIN,
                      SECURE_BOOT_OK);
@@ -288,7 +294,7 @@ static void boot_receive_chunk(boot_controller_t *controller, const uint8_t *dat
 
     sha256_update(&controller->image_hash, request.data, request.length);
     controller->received_image_size += request.length;
-    controller->deadline_ms = HAL_GetTick() + BOOT_UPDATE_TIMEOUT_MS;
+    custom_timer_start(&controller->state_timer, BOOT_UPDATE_TIMEOUT_MS);
     controller->last_result = SECURE_BOOT_OK;
     boot_send_report(controller, BOOT_UART_REPORT_ACK, BOOT_UART_COMMAND_UPDATE_CHUNK,
                      SECURE_BOOT_OK);
@@ -322,20 +328,23 @@ static secure_boot_result_t boot_commit_verified_update(
 {
     secure_boot_manifest_t manifest;
     secure_boot_result_t result;
-
+    log_print("boot_commit_verified_update\n");
     if (!boot_flash_writer_flush(&controller->flash_writer)) {
         return SECURE_BOOT_ERROR_FLASH;
     }
+    // check that the computed digest matches the expected hash from UPDATE_BEGIN
     if (!crypto_manager_constant_time_equal(digest, controller->expected_hash,
                                             SHA256_DIGEST_SIZE)) {
         return SECURE_BOOT_ERROR_HASH;
     }
+    //check that the manifest can be built and signed correctly
     if (!crypto_manager_build_signed_manifest(controller->expected_image_size,
                                               controller->image_version,
                                               controller->expected_hash,
                                               controller->signature, &manifest)) {
         return SECURE_BOOT_ERROR_SIGNATURE;
     }
+    //check that the manifest can be written to flash correctly
     if (!boot_flash_write_manifest(controller->target_slot, &manifest)) {
         crypto_manager_secure_zero(&manifest, sizeof(manifest));
         return SECURE_BOOT_ERROR_FLASH;
@@ -370,7 +379,7 @@ static void boot_finish_update(boot_controller_t *controller, const uint8_t *dat
 {
     uint8_t digest[SHA256_DIGEST_SIZE];
     secure_boot_slot_t slot;
-
+    log_print("boot_finish_update\n");
     if (controller->state != BOOT_CONTROLLER_RECEIVING ||
         !boot_uart_parse_update_end(data, length, &slot) ||
         slot != controller->target_slot ||
@@ -409,8 +418,10 @@ void boot_controller_init(boot_controller_t *controller, CommManager_t *comm)
     controller->state = BOOT_CONTROLLER_WAIT_UPDATE;
     controller->target_slot = SECURE_BOOT_SLOT_NONE;
     boot_flash_writer_reset(&controller->flash_writer);
-    controller->deadline_ms = HAL_GetTick() + BOOT_STARTUP_TIMEOUT_MS;
-    controller->force_boot_deadline_ms = 0U;
+    custom_timer_start(&controller->state_timer, BOOT_STARTUP_TIMEOUT_MS);
+    custom_timer_start(&controller->boot_status_report_timer,
+                       BOOT_STATUS_REPORT_PERIOD_MS);
+    custom_timer_stop(&controller->force_boot_timer);
     recovery_result = secure_boot_recover_interrupted_update();
     controller->last_result = recovery_result;
     boot_send_report(controller, BOOT_UART_REPORT_BOOT,
@@ -519,13 +530,16 @@ void boot_controller_on_packet(boot_controller_t *controller, uint8_t *data,
 
     switch (data[0]) {
     case BOOT_UART_COMMAND_STATUS:
+        log_print("BOOT_UART_COMMAND_STATUS\n");
         boot_send_report(controller, BOOT_UART_REPORT_STATUS,
                          BOOT_UART_COMMAND_STATUS, controller->last_result);
         break;
     case BOOT_UART_COMMAND_VERIFY_SLOT:
+        log_print("BOOT_UART_COMMAND_VERIFY_SLOT\n");
         boot_verify_slot_command(controller, data, length);
         break;
     case BOOT_UART_COMMAND_BOOT_NOW:
+        log_print("BOOT_UART_COMMAND_BOOT_NOW\n");
         if (length != 1U || controller->state == BOOT_CONTROLLER_RECEIVING ||
             controller->state == BOOT_CONTROLLER_VERIFYING) {
             controller->last_result = SECURE_BOOT_ERROR_STATE;
@@ -538,16 +552,31 @@ void boot_controller_on_packet(boot_controller_t *controller, uint8_t *data,
                          BOOT_UART_COMMAND_BOOT_NOW, SECURE_BOOT_OK);
         boot_schedule_boot(controller);
         break;
+    case BOOT_UART_COMMAND_RESET:
+        log_print("BOOT_UART_COMMAND_RESET\n");
+        if (length != 1U || controller->state == BOOT_CONTROLLER_RECEIVING ||
+            controller->state == BOOT_CONTROLLER_VERIFYING) {
+            controller->last_result = SECURE_BOOT_ERROR_STATE;
+            boot_send_report(controller, BOOT_UART_REPORT_NACK,
+                             BOOT_UART_COMMAND_RESET, controller->last_result);
+            break;
+        }
+        boot_platform_system_reset();
+        break;
     case BOOT_UART_COMMAND_UPDATE_BEGIN:
+        log_print("BOOT_UART_COMMAND_UPDATE_BEGIN\n");
         boot_begin_update(controller, data, length);
         break;
     case BOOT_UART_COMMAND_UPDATE_CHUNK:
+        log_print("BOOT_UART_COMMAND_UPDATE_CHUNK\n");
         boot_receive_chunk(controller, data, length);
         break;
     case BOOT_UART_COMMAND_UPDATE_END:
+        log_print("BOOT_UART_COMMAND_UPDATE_END\n");
         boot_finish_update(controller, data, length);
         break;
     case BOOT_UART_COMMAND_UPDATE_ABORT:
+        log_print("BOOT_UART_COMMAND_UPDATE_ABORT\n");
         boot_reset_transfer(controller);
         (void)secure_boot_abort_update();
         controller->state = BOOT_CONTROLLER_RECOVERY;
@@ -556,9 +585,11 @@ void boot_controller_on_packet(boot_controller_t *controller, uint8_t *data,
                          BOOT_UART_COMMAND_UPDATE_ABORT, SECURE_BOOT_OK);
         break;
     case BOOT_UART_COMMAND_CONFIRM_SLOT:
+        log_print("BOOT_UART_COMMAND_CONFIRM_SLOT\n");
         boot_confirm_slot_command(controller, data, length);
         break;
     default:
+        log_print("BOOT_UART_COMMAND_UNKNOWN\n");
         controller->last_result = SECURE_BOOT_ERROR_ARGUMENT;
         boot_send_report(controller, BOOT_UART_REPORT_NACK, data[0],
                          controller->last_result);
@@ -579,22 +610,22 @@ void boot_controller_on_parser_error(boot_controller_t *controller, uint8_t erro
 
 void boot_controller_poll(boot_controller_t *controller)
 {
-    uint32_t now;
-
     if (controller == NULL) {
         return;
     }
 
-    now = HAL_GetTick();
     // Handle timeouts for various states
-    if (controller->state == BOOT_CONTROLLER_WAIT_UPDATE &&
-        boot_timeout_elapsed(now, controller->deadline_ms)) {
-            // No update received within the timeout, schedule boot.
-        boot_schedule_boot(controller);
-        boot_send_report(controller, BOOT_UART_REPORT_STATUS,
-                         BOOT_UART_COMMAND_STATUS, SECURE_BOOT_OK);
+    if (controller->state == BOOT_CONTROLLER_WAIT_UPDATE) {
+        if (custom_timer_expired(&controller->state_timer)) {
+            boot_schedule_boot(controller);
+        } else if (custom_timer_expired(&controller->boot_status_report_timer)) {
+            custom_timer_start(&controller->boot_status_report_timer,
+                               BOOT_STATUS_REPORT_PERIOD_MS);
+            boot_send_report(controller, BOOT_UART_REPORT_BOOT,
+                             BOOT_UART_COMMAND_STATUS, controller->last_result);
+        }
     } else if (controller->state == BOOT_CONTROLLER_RECEIVING &&
-               boot_timeout_elapsed(now, controller->deadline_ms)) {
+               custom_timer_expired(&controller->state_timer)) {
         boot_reset_transfer(controller);
         (void)secure_boot_abort_update();
         controller->state = BOOT_CONTROLLER_RECOVERY;
@@ -602,13 +633,16 @@ void boot_controller_poll(boot_controller_t *controller)
         boot_send_report(controller, BOOT_UART_REPORT_NACK,
                          BOOT_UART_COMMAND_UPDATE_END, controller->last_result);
     } else if (controller->state == BOOT_CONTROLLER_BOOT_PENDING &&
-               boot_timeout_elapsed(now, controller->deadline_ms)) {
+               custom_timer_expired(&controller->state_timer)) {
         if (!comm_manager_tx_idle(controller->comm) &&
-            !boot_timeout_elapsed(now, controller->force_boot_deadline_ms)) {
+            !custom_timer_expired(&controller->force_boot_timer)) {
             return;
         }
 
         controller->last_result = secure_boot_boot();
+        if (controller->last_result == SECURE_BOOT_ERROR_NO_VALID_IMAGE) {
+            boot_platform_system_reset();
+        }
         controller->state = BOOT_CONTROLLER_RECOVERY;
         boot_send_report(controller, BOOT_UART_REPORT_NACK,
                          BOOT_UART_COMMAND_STATUS, controller->last_result);

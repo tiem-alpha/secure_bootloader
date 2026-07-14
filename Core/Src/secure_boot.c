@@ -4,8 +4,8 @@
 #include <string.h>
 
 #include "flash/boot_flash.h"
+#include "platform/boot_platform.h"
 #include "secure/crypto_manager.h"
-#include "stm32f1xx_hal.h"
 
 /** Maximum number of boot attempts allowed for one trial image. */
 #define SECURE_BOOT_TRIAL_BOOT_LIMIT 1U
@@ -464,27 +464,8 @@ static secure_boot_slot_t secure_boot_select_fallback(const secure_boot_status_t
  */
 static void secure_boot_jump_to_image(secure_boot_slot_t slot)
 {
-    uint32_t image_base = secure_boot_slot_base(slot);
-    const uint32_t *vectors = (const uint32_t *)image_base;
-    void (*reset_handler)(void) = (void (*)(void))vectors[1];
-    uint32_t irq;
-
-    __disable_irq();
-    SysTick->CTRL = 0U;
-    SysTick->LOAD = 0U;
-    SysTick->VAL = 0U;
-    for (irq = 0U; irq < 8U; ++irq) {
-        NVIC->ICER[irq] = 0xFFFFFFFFUL;
-        NVIC->ICPR[irq] = 0xFFFFFFFFUL;
-    }
-    SCB->VTOR = image_base;
-    __DSB();
-    __ISB();
-    __set_MSP(vectors[0]);
-    reset_handler();
-
-    while (1) {
-    }
+    
+    boot_platform_jump_to_image(secure_boot_slot_base(slot));
 }
 
 /** @copydoc secure_boot_boot */

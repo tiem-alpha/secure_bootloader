@@ -11,7 +11,7 @@
  * 1. Allocate one caller-owned @ref boot_controller_t instance, usually in
  *    static storage.
  * 2. Initialize the communication layer first.
- * 3. Call @ref boot_controller_init once after HAL tick and Flash are ready.
+ * 3. Call @ref boot_controller_init once after the platform tick and Flash are ready.
  * 4. Forward each decoded UART payload to @ref boot_controller_on_packet.
  * 5. Forward parser/frame errors to @ref boot_controller_on_parser_error.
  * 6. Call @ref boot_controller_poll repeatedly from the main loop.
@@ -26,6 +26,7 @@
 #include "flash/boot_flash.h"
 #include "secure_boot.h"
 #include "secure/sha256.h"
+#include "utils/custom_timer.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,30 +35,38 @@ extern "C" {
 /**
  * @brief Startup wait window before the controller tries to boot an app.
  *
- * Unit: HAL tick milliseconds. During this window the controller stays in
+ * Unit: platform tick milliseconds. During this window the controller stays in
  * @ref BOOT_CONTROLLER_WAIT_UPDATE and accepts update or diagnostic commands.
  */
-#define BOOT_STARTUP_TIMEOUT_MS        5000UL
+#define BOOT_STARTUP_TIMEOUT_MS        4000UL
+/**
+ * @brief Period between unsolicited boot status reports while waiting for FOTA.
+ *
+ * Unit: platform tick milliseconds. The host uses these BOOT reports to detect
+ * that the target is in the bootloader before sending UPDATE_BEGIN.
+ */
+#define BOOT_STATUS_REPORT_PERIOD_MS   500UL
 /**
  * @brief Maximum idle time allowed between FOTA chunks.
  *
- * Unit: HAL tick milliseconds. The deadline is refreshed after every accepted
- * UPDATE_CHUNK. If it expires, the update is aborted and the controller enters
- * @ref BOOT_CONTROLLER_RECOVERY.
+ * Unit: platform tick milliseconds. The deadline is refreshed after every
+ * accepted UPDATE_CHUNK. If it expires, the update is aborted and the
+ * controller enters @ref BOOT_CONTROLLER_RECOVERY.
  */
 #define BOOT_UPDATE_TIMEOUT_MS         15000UL
 /**
  * @brief Minimum delay between sending the JUMP report and attempting boot.
  *
- * Unit: HAL tick milliseconds. This gives the communication manager time to
- * start draining the final report before @ref secure_boot_boot is called.
+ * Unit: platform tick milliseconds. This gives the communication manager time
+ * to start draining the final report before @ref secure_boot_boot is called.
  */
 #define BOOT_JUMP_DELAY_MS             100UL
 /**
  * @brief Maximum wait for queued UART reports to drain before booting.
  *
- * Unit: HAL tick milliseconds. Once this deadline expires, boot is attempted
- * even if @ref comm_manager_tx_idle still reports pending transmission.
+ * Unit: platform tick milliseconds. Once this deadline expires, boot is
+ * attempted even if @ref comm_manager_tx_idle still reports pending
+ * transmission.
  */
 #define BOOT_JUMP_MAX_WAIT_MS          500UL
 
@@ -66,9 +75,10 @@ typedef enum {
     /**
      * Waiting for host commands before falling through to application boot.
      *
-     * Accepted commands include STATUS, VERIFY_SLOT, BOOT_NOW, UPDATE_BEGIN,
-     * UPDATE_ABORT, and CONFIRM_SLOT. If no update command arrives before
-     * @ref BOOT_STARTUP_TIMEOUT_MS, boot is scheduled automatically.
+     * Accepted commands include STATUS, VERIFY_SLOT, BOOT_NOW, RESET,
+     * UPDATE_BEGIN, UPDATE_ABORT, and CONFIRM_SLOT. If no update command
+     * arrives before @ref BOOT_STARTUP_TIMEOUT_MS, boot is scheduled
+     * automatically.
      */
     BOOT_CONTROLLER_WAIT_UPDATE = 0,
     /**
@@ -120,10 +130,12 @@ typedef struct {
     CommManager_t *comm;
     /** Current boot controller state. */
     boot_controller_state_t state;
-    /** State-specific deadline in HAL tick milliseconds. */
-    uint32_t deadline_ms;
-    /** Hard deadline for booting even if UART TX has not fully drained. */
-    uint32_t force_boot_deadline_ms;
+    /** State-specific timeout for startup wait, update receive, or jump delay. */
+    custom_timer_t state_timer;
+    /** Hard timeout for booting even if UART TX has not fully drained. */
+    custom_timer_t force_boot_timer;
+    /** Periodic BOOT report timer while waiting for FOTA. */
+    custom_timer_t boot_status_report_timer;
     /** Image size declared by UPDATE_BEGIN. */
     uint32_t expected_image_size;
     /** Number of image bytes accepted and written so far. */
@@ -157,7 +169,7 @@ typedef struct {
  * @ref BOOT_CONTROLLER_WAIT_UPDATE and waits for host commands until
  * @ref BOOT_STARTUP_TIMEOUT_MS expires.
  *
- * @pre HAL tick must be running because this function reads @ref HAL_GetTick.
+ * @pre Platform tick must be running because this function starts timers.
  * @pre Flash and secure boot dependencies must be ready for recovery/status
  *      access.
  * @pre @p comm must already be initialized by @ref comm_manager_init.
@@ -195,8 +207,8 @@ void boot_controller_init(boot_controller_t *controller, CommManager_t *comm);
  *
  * @param[in,out] controller Controller instance. NULL is accepted and ignored.
  *
- * @post May update @p controller->state, @p controller->deadline_ms,
- *       @p controller->force_boot_deadline_ms, and @p controller->last_result.
+ * @post May update @p controller->state, timer fields, and
+ *       @p controller->last_result.
  * @post May queue STATUS, JUMP, or NACK reports through the communication
  *       manager.
  *
@@ -217,6 +229,7 @@ void boot_controller_poll(boot_controller_t *controller);
  * - STATUS: queue a STATUS report with current state and persistent boot status.
  * - VERIFY_SLOT: verify one slot when not receiving/verifying an update.
  * - BOOT_NOW: schedule immediate application boot when not receiving/verifying.
+ * - RESET: request a system reset when not receiving/verifying an update.
  * - UPDATE_BEGIN: validate target slot and declared image metadata, mark update
  *   in progress, erase the target slot, and enter RECEIVING.
  * - UPDATE_CHUNK: require matching slot and exact sequential offset, write data

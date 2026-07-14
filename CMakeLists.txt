@@ -56,6 +56,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/secure/crypto_util.c
     Core/Src/secure/crypto_manager.c
     Core/Src/secure/ecdsa_p256.c
+    Core/Src/platform/boot_platform_stm32.c
+    Core/Src/utils/custom_timer.c
     Core/Src/secure_boot.c
     Core/Src/secure/secure_boot_public_key.c
     Core/Src/com/boot_uart_protocol.c
@@ -70,6 +72,8 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Inc/com
     Core/Inc/secure
     Core/Inc/log
+    Core/Inc/platform
+    Core/Inc/utils
     # Add user defined include paths
 )
 

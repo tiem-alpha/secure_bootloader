@@ -27,9 +27,7 @@ PACK_START = 0xAC
 PACK_END = 0xBB
 COM_MAX_PAYLOAD_SIZE = 250
 
-CMD_STATUS = 0x01
-CMD_VERIFY_SLOT = 0x02
-CMD_BOOT_NOW = 0x03
+CMD_RESET = 0x04
 CMD_UPDATE_BEGIN = 0x10
 CMD_UPDATE_CHUNK = 0x11
 CMD_UPDATE_END = 0x12
@@ -281,6 +279,13 @@ class FotaClient:
         time.sleep(0.35)
         self.ser.reset_input_buffer()
 
+    def reset_target(self, mode: str):
+        self.ser.reset_input_buffer()
+        self.log("TX RESET command")
+        self.send_payload(bytes([CMD_RESET]))
+        time.sleep(0.3)
+        self.pulse_reset(mode)
+
     def send_payload(self, payload: bytes):
         self.ser.write(pack_frame(payload))
         self.ser.flush()
@@ -323,16 +328,6 @@ class FotaClient:
             if report.get("report") == REPORT_BOOT:
                 return report
         raise TimeoutError("Boot report not received")
-
-    def status(self):
-        self.send_payload(bytes([CMD_STATUS]))
-        return self.wait_report(command=CMD_STATUS, timeout_s=2.0)
-
-    def verify_slot(self, slot: int):
-        return self.send_command_expect_ack(bytes([CMD_VERIFY_SLOT, slot]), timeout_s=8.0)
-
-    def boot_now(self):
-        return self.send_command_expect_ack(bytes([CMD_BOOT_NOW]), timeout_s=2.0)
 
     def transfer(self, signed: dict, slot: int, chunk_size: int, delay_s: float):
         firmware = Path(signed["firmware_path"]).read_bytes()
@@ -424,11 +419,7 @@ class FotaToolGui:
 
         actions = ttk.Frame(main)
         actions.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(10, 8))
-        ttk.Button(actions, text="Reset/wait boot", command=self.wait_boot).pack(side="left")
-        ttk.Button(actions, text="Status", command=self.status).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="Transfer signed FW", command=self.transfer).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="Verify slot", command=self.verify_slot).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="Boot now", command=self.boot_now).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Start update", command=self.start_update).pack(side="left")
 
         self.log_text = tk.Text(main, height=22, wrap="word")
         self.log_text.grid(row=6, column=0, columnspan=3, sticky="nsew")
@@ -521,38 +512,7 @@ class FotaToolGui:
             raise ValueError("Select COM port")
         return FotaClient(self.port.get(), int(self.baud.get(), 0), self.log)
 
-    def wait_boot(self):
-        def task():
-            client = None
-            try:
-                client = self.make_client()
-                client.pulse_reset(self.reset_mode.get())
-                self.log("Waiting BOOT report. If reset is not wired, press MCU reset now.")
-                client.wait_boot(timeout_s=8.0)
-                self.log("MCU is in bootloader")
-            except Exception as exc:
-                self.log(f"ERROR: {exc}")
-            finally:
-                if client:
-                    client.close()
-
-        self.run_worker(task)
-
-    def status(self):
-        def task():
-            client = None
-            try:
-                client = self.make_client()
-                client.status()
-            except Exception as exc:
-                self.log(f"ERROR: {exc}")
-            finally:
-                if client:
-                    client.close()
-
-        self.run_worker(task)
-
-    def transfer(self):
+    def start_update(self):
         def task():
             client = None
             try:
@@ -564,43 +524,12 @@ class FotaToolGui:
                     raise ValueError(f"Chunk must be 1..{DEFAULT_CHUNK_SIZE}")
                 delay_s = int(self.chunk_delay_ms.get(), 0) / 1000.0
                 client = self.make_client()
-                client.pulse_reset(self.reset_mode.get())
-                try:
-                    client.wait_boot(timeout_s=4.0)
-                except Exception:
-                    self.log("BOOT report not seen; trying transfer anyway")
+                client.reset_target(self.reset_mode.get())
+                self.log("Waiting BOOT status. If reset is not wired, press MCU reset now.")
+                client.wait_boot(timeout_s=8.0)
+                self.log("BOOT status received; starting firmware update")
                 client.transfer(self.signed, slot, chunk, delay_s)
                 self.log("FOTA transfer complete")
-            except Exception as exc:
-                self.log(f"ERROR: {exc}")
-            finally:
-                if client:
-                    client.close()
-
-        self.run_worker(task)
-
-    def verify_slot(self):
-        def task():
-            client = None
-            try:
-                client = self.make_client()
-                client.verify_slot(int(self.slot.get()))
-                self.log("Verify slot OK")
-            except Exception as exc:
-                self.log(f"ERROR: {exc}")
-            finally:
-                if client:
-                    client.close()
-
-        self.run_worker(task)
-
-    def boot_now(self):
-        def task():
-            client = None
-            try:
-                client = self.make_client()
-                client.boot_now()
-                self.log("BOOT_NOW ACK")
             except Exception as exc:
                 self.log(f"ERROR: {exc}")
             finally:

@@ -3,86 +3,47 @@
 #include <string.h>
 
 #include "boot_layout.h"
-#include "stm32f1xx_hal.h"
-
-/**
- * @brief Program one STM32F1 Flash half-word.
- *
- * @details
- * Unlocks Flash, programs one 16-bit value, then locks Flash again regardless
- * of success or failure.
- *
- * @param[in] address Absolute Flash address to program. Must be half-word
- *                    aligned and already erased.
- * @param[in] value Half-word value to write.
- *
- * @return true when HAL unlock/program sequence succeeds.
- * @return false when unlock or program fails.
- */
-static bool boot_flash_program_half_word(uint32_t address, uint16_t value)
-{
-    HAL_StatusTypeDef result;
-
-    result = HAL_FLASH_Unlock();
-    if (result == HAL_OK) {
-        result = HAL_FLASH_Program(FLASH_TYPEPROGRAM_HALFWORD, address, value);
-    }
-    (void)HAL_FLASH_Lock();
-    return result == HAL_OK;
-}
+#include "platform/boot_platform.h"
 
 /** @copydoc boot_flash_erase_slot */
 bool boot_flash_erase_slot(secure_boot_slot_t slot)
 {
-    FLASH_EraseInitTypeDef erase = {0};
-    uint32_t page_error = 0U;
-    HAL_StatusTypeDef result;
+    uint32_t base = secure_boot_slot_base(slot);
 
-    result = HAL_FLASH_Unlock();
-    if (result == HAL_OK) {
-        erase.TypeErase = FLASH_TYPEERASE_PAGES;
-        erase.PageAddress = secure_boot_slot_base(slot);
-        erase.NbPages = BOOT_APP_SLOT_SIZE / BOOT_FLASH_PAGE_SIZE;
-        result = HAL_FLASHEx_Erase(&erase, &page_error);
+    if (base == 0U) {
+        return false;
     }
-    (void)HAL_FLASH_Lock();
-    return result == HAL_OK;
+
+    return boot_platform_flash_erase_pages(base,
+                                           BOOT_APP_SLOT_SIZE /
+                                               BOOT_FLASH_PAGE_SIZE);
 }
 
 /** @copydoc boot_flash_write_status_page */
 bool boot_flash_write_status_page(uint32_t page_address,
                                   const secure_boot_status_t *status)
 {
-    FLASH_EraseInitTypeDef erase = {0};
-    uint32_t page_error = 0U;
     const uint8_t *bytes = (const uint8_t *)status;
     uint32_t offset;
-    HAL_StatusTypeDef result = HAL_OK;
 
     if (status == NULL || (sizeof(*status) % 2U) != 0U) {
         return false;
     }
 
-    if (HAL_FLASH_Unlock() != HAL_OK) {
-        result = HAL_ERROR;
+    if (!boot_platform_flash_erase_pages(page_address, 1U)) {
+        return false;
     }
 
-    if (result == HAL_OK) {
-        erase.TypeErase = FLASH_TYPEERASE_PAGES;
-        erase.PageAddress = page_address;
-        erase.NbPages = 1U;
-        result = HAL_FLASHEx_Erase(&erase, &page_error);
-    }
-
-    for (offset = 0U; result == HAL_OK && offset < sizeof(*status); offset += 2U) {
+    for (offset = 0U; offset < sizeof(*status); offset += 2U) {
         uint16_t half_word = (uint16_t)bytes[offset] |
                              ((uint16_t)bytes[offset + 1U] << 8U);
-        result = HAL_FLASH_Program(FLASH_TYPEPROGRAM_HALFWORD,
-                                   page_address + offset, half_word);
+        if (!boot_platform_flash_program_half_word(page_address + offset,
+                                                   half_word)) {
+            return false;
+        }
     }
 
-    (void)HAL_FLASH_Lock();
-    return result == HAL_OK;
+    return true;
 }
 
 /** @copydoc boot_flash_writer_reset */
@@ -123,7 +84,7 @@ bool boot_flash_writer_write(boot_flash_writer_t *writer, const uint8_t *data,
     if (writer->has_pending_byte != 0U && length > 0U) {
         uint16_t half_word = (uint16_t)writer->pending_byte |
                              ((uint16_t)data[0] << 8U);
-        if (!boot_flash_program_half_word(address - 1U, half_word)) {
+        if (!boot_platform_flash_program_half_word(address - 1U, half_word)) {
             return false;
         }
         writer->has_pending_byte = 0U;
@@ -134,7 +95,7 @@ bool boot_flash_writer_write(boot_flash_writer_t *writer, const uint8_t *data,
     while (index + 1U < length) {
         uint16_t half_word = (uint16_t)data[index] |
                              ((uint16_t)data[index + 1U] << 8U);
-        if (!boot_flash_program_half_word(address, half_word)) {
+        if (!boot_platform_flash_program_half_word(address, half_word)) {
             return false;
         }
         address += 2U;
@@ -164,8 +125,8 @@ bool boot_flash_writer_flush(boot_flash_writer_t *writer)
     }
 
     address = secure_boot_slot_base(writer->slot) + writer->written_size - 1U;
-    if (!boot_flash_program_half_word(address,
-                                      (uint16_t)writer->pending_byte | 0xFF00U)) {
+    if (!boot_platform_flash_program_half_word(
+            address, (uint16_t)writer->pending_byte | 0xFF00U)) {
         return false;
     }
     writer->has_pending_byte = 0U;
@@ -192,7 +153,7 @@ bool boot_flash_write_manifest(secure_boot_slot_t slot,
     for (offset = 0U; offset < sizeof(*manifest); offset += 2U) {
         uint16_t half_word = (uint16_t)bytes[offset] |
                              ((uint16_t)bytes[offset + 1U] << 8U);
-        if (!boot_flash_program_half_word(address + offset, half_word)) {
+        if (!boot_platform_flash_program_half_word(address + offset, half_word)) {
             return false;
         }
     }

@@ -67,7 +67,7 @@ uint8_t my_pack_data(const uint8_t *data, uint16_t length, uint8_t *buffer_out, 
     if (length < PACKER_MIN_PAYLOAD_SIZE || length > PACKER_MAX_PAYLOAD_SIZE ||
         (uint32_t)length + PACKER_FRAME_OVERHEAD > size_out)
     {
-        log_print( "Error: Data length out of bounds.\n");
+        // log_print( "Error: Data length out of bounds.\n");
         return PARSER_ERROR_LENGTH_OUT_OF_BOUNDS; // Error: Data length out of bounds
     }
     crc16_init(&crc);
@@ -93,7 +93,7 @@ uint8_t my_pack_data(const uint8_t *data, uint16_t length, uint8_t *buffer_out, 
     buffer_out[i] = PACKER_END_BYTE;
     i++;
     *packed_length = i;
-    log_print( "Data packed successfully.\n");
+    // log_print( "Data packed successfully.\n");
     return PARSER_SUCCESS; // Return total length of packed data
 }
 
@@ -106,13 +106,13 @@ uint8_t my_unpack_data(const uint8_t *buffer, uint16_t buffer_length, uint8_t *b
     if (buffer == NULL || buffer_out == NULL ||
         buffer_length < PACKER_FRAME_OVERHEAD + PACKER_MIN_PAYLOAD_SIZE)
     {
-        log_print( "Error: Buffer length too small.\n");
+        // log_print( "Error: Buffer length too small.\n");
         return PARSER_ERROR_LENGTH_OUT_OF_BOUNDS; // Error: Buffer length too small
     }
 
     if (buffer[i] != PACKER_START_BYTE)
     {
-        log_print( "Error: Invalid start byte.\n");
+        // log_print( "Error: Invalid start byte.\n");
         return PARSER_ERROR_INVALID_START_BYTE; // Error: Invalid start byte
     }
     i++;

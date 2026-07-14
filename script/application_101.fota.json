@@ -1,0 +1,9 @@
+{
+  "firmware_path": "D:\\Embedded\\Project\\stm32f103\\application\\build\\Debug\\application.bin",
+  "image_size": 9512,
+  "image_version": 2,
+  "image_sha256": "afbfff5a9d01760b3a9d328dc7d79ef8630972f2f059945ec78561770e8689ad",
+  "manifest_signed_region": "464d425301003400282500000200000000000000afbfff5a9d01760b3a9d328dc7d79ef8630972f2f059945ec78561770e8689ad",
+  "signature_raw": "16e8b524323e8fb71ab35d49443d7d6d7f85818af6258e0c420eb4a53467b6c230b044cb62b0f7160ae8a9ca524cd3a90b1376aeb25bedba43fe0390cdd6e82d",
+  "public_key_raw": "f84904d4e79289eee597c3dd75569be206938d93c61ff949530d047e478fb697c7f54f3b4219d1d6c371468615a8b0f347222180dd9b8e798ecffb69b02c2b4a"
+}

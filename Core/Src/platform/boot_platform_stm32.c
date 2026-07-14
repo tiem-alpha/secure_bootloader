@@ -67,6 +67,7 @@ void boot_platform_jump_to_image(uint32_t image_base)
     __DSB();
     __ISB();
     __set_MSP(vectors[0]);
+    __enable_irq();
     reset_handler();
 
     while (1) {

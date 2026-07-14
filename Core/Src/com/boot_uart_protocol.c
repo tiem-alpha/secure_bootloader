@@ -99,7 +99,7 @@ bool boot_uart_build_slot_info_report(
     uint32_t app1_image_version, secure_boot_result_t app2_result,
     uint8_t app2_valid, uint32_t app2_image_size,
     uint32_t app2_image_version, uint32_t minimum_version,
-    uint16_t *length_out)
+    uint8_t target_update_slot, uint16_t *length_out)
 {
     if (payload == NULL || length_out == NULL ||
         capacity < BOOT_UART_SLOT_INFO_REPORT_SIZE) {
@@ -119,6 +119,7 @@ bool boot_uart_build_slot_info_report(
     boot_uart_write_u32_le(&payload[16], app2_image_size);
     boot_uart_write_u32_le(&payload[20], app2_image_version);
     boot_uart_write_u32_le(&payload[24], minimum_version);
+    payload[28] = target_update_slot;
     *length_out = BOOT_UART_SLOT_INFO_REPORT_SIZE;
     return true;
 }

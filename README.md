@@ -117,7 +117,9 @@ Manifest/header requirements:
 
 Update target ownership:
 
-- The PC FOTA tool does not send, choose, validate, or display a Flash slot.
+- The PC FOTA tool does not send a Flash slot. It signs both APP1/APP2 binaries
+  from a firmware folder, queries `SLOT_INFO` before update, and transfers the
+  binary linked for the slot selected by bootloader policy.
 - The bootloader selects the inactive Flash slot from persistent boot status:
   if no active image can be identified it selects APP1; otherwise it selects
   the opposite slot from `active_slot`.
@@ -369,7 +371,7 @@ Flash.
 | `NACK`   | `0x82` | Command failed                                |
 | `BOOT`   | `0x83` | Bootloader has entered boot mode              |
 | `JUMP`   | `0x84` | Bootloader is about to jump to an application |
-| `SLOT_INFO` | `0x85` | APP1/APP2 firmware metadata                |
+| `SLOT_INFO` | `0x85` | APP1/APP2 firmware metadata and update target |
 
 Report payload is 20 bytes:
 
@@ -387,7 +389,7 @@ Report payload is 20 bytes:
 [16..19] image_version       little-endian
 ```
 
-`SLOT_INFO` report payload is 28 bytes:
+`SLOT_INFO` report payload is 29 bytes:
 
 ```text
 [0] report = 0x85
@@ -403,6 +405,7 @@ Report payload is 20 bytes:
 [16..19] APP2 image_size     little-endian
 [20..23] APP2 image_version  little-endian
 [24..27] minimum_version     little-endian
+[28] target_update_slot
 ```
 
 ## Module Architecture
@@ -510,7 +513,15 @@ sequenceDiagram
     participant SB as Secure Boot
     participant APP as Application
 
+    PC->>PC: Select firmware folder with APP1.bin and APP2.bin
+    PC->>PC: Inspect vector table and infer linked slot for each .bin
+    PC->>PC: Sign both images and build APP1/APP2 metadata bundle
+    PC->>BL: RESET
     BL->>PC: BOOT report
+    PC->>BL: SLOT_INFO
+    BL->>SB: secure_boot_select_update_slot()
+    BL->>PC: SLOT_INFO(APP metadata, target_update_slot)
+    PC->>PC: Select signed image matching target_update_slot
     PC->>BL: UPDATE_BEGIN(size,version,sha,signature)
     BL->>SB: secure_boot_select_update_slot()
     BL->>PC: ACK UPDATE_BEGIN
@@ -534,6 +545,45 @@ sequenceDiagram
     BL->>PC: JUMP report
     BL->>APP: jump to vector table
 ```
+
+### Normal FOTA communication flow
+
+1. Tool prepares update package before UART transfer:
+   user selects the firmware folder, tool scans all `.bin` files, detects linked
+   slot from each vector table, requires one APP1 image and one APP2 image, then
+   signs both images into one APP1/APP2 metadata bundle.
+2. Tool sends `RESET` to FW bootloader. If reset wiring or app reset handling is
+   unavailable, user manually resets the MCU after clicking `Start update`.
+3. FW enters bootloader wait mode and periodically sends `BOOT` report.
+4. Tool waits until it receives `BOOT`; only then it starts the FOTA command
+   sequence.
+5. Tool sends `SLOT_INFO` request.
+6. FW handles `SLOT_INFO`, reads APP1/APP2 metadata, calls
+   `secure_boot_select_update_slot()`, and returns `SLOT_INFO` report containing
+   slot validity, image versions, `minimum_version`, and `target_update_slot`.
+7. Tool reads `target_update_slot` and selects the signed APP1 or APP2 binary
+   whose vector table matches that slot. Tool does not send the slot value back
+   to FW.
+8. Tool sends `UPDATE_BEGIN(size, version, sha256, signature)` for the selected
+   binary.
+9. FW independently calls `secure_boot_select_update_slot()` again, stores the
+   selected internal target slot, initializes transfer state, and replies
+   `ACK UPDATE_BEGIN`.
+10. Tool sends the first `UPDATE_CHUNK(offset=0, data...)`.
+11. FW checks that the first chunk contains a valid vector table linked for its
+    selected internal target slot. If it does not match, FW replies `NACK` and
+    the update is aborted.
+12. If the vector table matches, FW calls `secure_boot_begin_update()`, writes
+    `update_state=RECEIVING`, erases the target slot, writes the chunk, updates
+    streaming SHA-256, and replies `ACK UPDATE_CHUNK`.
+13. Tool continues sending `UPDATE_CHUNK` frames with increasing offsets; FW
+    writes each chunk and ACKs each accepted frame.
+14. After the last chunk is ACKed, Tool sends `UPDATE_END`.
+15. FW finalizes SHA-256, compares it with the `UPDATE_BEGIN` hash, builds and
+    verifies the signed manifest, writes the manifest to the target slot, and
+    calls `secure_boot_request_trial(target_slot)`.
+16. FW replies `ACK UPDATE_END`, sends `JUMP` report, then jumps to the updated
+    trial application.
 
 ### Power loss during update
 
@@ -638,11 +688,11 @@ exceed `secure_boot_slot_max_image_size()` (`9984` bytes).
 ### 4. Sign firmware
 
 ```powershell
-python script\fota_uart_tool.py sign `
-  --firmware app.bin `
+python script\fota_uart_tool.py sign-folder `
+  --firmware-dir path\to\folder_with_app1_app2_bins `
   --key script\keys\secure_boot_p256_private_key.pem `
   --version 1 `
-  --out app.fota.json
+  --out firmware_bundle.fota.json
 ```
 
 Or use the GUI:
@@ -656,13 +706,14 @@ python script\fota_uart_tool.py
 In the GUI:
 
 1. Select the private key.
-2. Select the firmware `.bin`.
+2. Select the firmware folder containing one APP1-linked `.bin` and one
+   APP2-linked `.bin`.
 3. Select version.
 4. Select COM port and baudrate.
 5. Click `Sign firmware`.
 6. Click `Start update`.
-7. The tool sends `RESET`, waits for a `BOOT` status report, then transfers the
-   signed firmware.
+7. The tool sends `RESET`, waits for a `BOOT` status report, queries `SLOT_INFO`
+   for the selected target slot, then transfers the matching signed firmware.
 8. After `UPDATE_END` succeeds, the bootloader sends `JUMP` and starts the app.
 
 The GUI also provides `Slot/FW info` to request APP1/APP2 validity, image size,

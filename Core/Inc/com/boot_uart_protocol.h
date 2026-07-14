@@ -23,7 +23,7 @@ extern "C" {
 #define BOOT_UART_COMMAND_BOOT_NOW     0x03U
 /** Reset the target into a fresh bootloader session. Payload: [cmd]. */
 #define BOOT_UART_COMMAND_RESET        0x04U
-/** Request application slot firmware metadata. Payload: [cmd]. */
+/** Request application slot firmware metadata and next update target. Payload: [cmd]. */
 #define BOOT_UART_COMMAND_SLOT_INFO    0x05U
 /** Start a firmware update. Payload size is fixed. */
 #define BOOT_UART_COMMAND_UPDATE_BEGIN 0x10U
@@ -56,7 +56,7 @@ extern "C" {
 /** Fixed payload length for every bootloader report. */
 #define BOOT_UART_REPORT_SIZE          20U
 /** Fixed payload length for the slot metadata report. */
-#define BOOT_UART_SLOT_INFO_REPORT_SIZE 28U
+#define BOOT_UART_SLOT_INFO_REPORT_SIZE 29U
 
 /*
  * Report payload:
@@ -74,7 +74,8 @@ extern "C" {
  * [6] APP2 secure_boot_result, [7] APP2 valid,
  * [8..11] APP1 image_size, [12..15] APP1 image_version,
  * [16..19] APP2 image_size, [20..23] APP2 image_version,
- * [24..27] minimum_version.
+ * [24..27] minimum_version,
+ * [28] target_update_slot selected by secure boot policy.
  */
 
 /** Parsed UPDATE_BEGIN request. Pointers refer to the original payload. */
@@ -200,6 +201,8 @@ bool boot_uart_build_report(uint8_t *payload, uint16_t capacity, uint8_t report,
  * @param[in] app2_image_size APP2 image size from the verified manifest.
  * @param[in] app2_image_version APP2 firmware version from the verified manifest.
  * @param[in] minimum_version Current anti-rollback minimum version.
+ * @param[in] target_update_slot Slot selected by secure boot policy for the
+ *                               next update, or SECURE_BOOT_SLOT_NONE.
  * @param[out] length_out Output payload length, always
  *                        BOOT_UART_SLOT_INFO_REPORT_SIZE.
  *
@@ -213,7 +216,7 @@ bool boot_uart_build_slot_info_report(
     uint32_t app1_image_version, secure_boot_result_t app2_result,
     uint8_t app2_valid, uint32_t app2_image_size,
     uint32_t app2_image_version, uint32_t minimum_version,
-    uint16_t *length_out);
+    uint8_t target_update_slot, uint16_t *length_out);
 
 #ifdef __cplusplus
 }

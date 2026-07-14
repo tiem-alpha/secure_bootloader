@@ -330,6 +330,7 @@ static void boot_send_slot_info_report(boot_controller_t *controller,
     uint8_t payload[BOOT_UART_SLOT_INFO_REPORT_SIZE];
     uint16_t length = 0U;
     secure_boot_status_t status;
+    secure_boot_slot_t target_update_slot = SECURE_BOOT_SLOT_NONE;
     boot_slot_info_t app1 = {
         .result = SECURE_BOOT_ERROR_NO_VALID_IMAGE,
         .valid = 0U,
@@ -348,6 +349,7 @@ static void boot_send_slot_info_report(boot_controller_t *controller,
                                    status.minimum_version);
         app2 = boot_read_slot_info(SECURE_BOOT_SLOT_APP2,
                                    status.minimum_version);
+        (void)secure_boot_select_update_slot(&target_update_slot);
     } else {
         status.minimum_version = 0U;
     }
@@ -356,7 +358,7 @@ static void boot_send_slot_info_report(boot_controller_t *controller,
             payload, sizeof(payload), (uint8_t)controller->state, result,
             app1.result, app1.valid, app1.image_size, app1.image_version,
             app2.result, app2.valid, app2.image_size, app2.image_version,
-            status.minimum_version, &length)) {
+            status.minimum_version, (uint8_t)target_update_slot, &length)) {
         boot_log_report_tx(BOOT_UART_REPORT_SLOT_INFO,
                            BOOT_UART_COMMAND_SLOT_INFO, result);
         (void)comm_manager_send_data(controller->comm, payload, length);

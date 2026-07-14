@@ -31,6 +31,67 @@ static const char *secure_boot_slot_name(secure_boot_slot_t slot)
         return "INVALID";
     }
 }
+
+static void secure_boot_log_manifest_u32(const char *field, uint32_t value,
+                                         uint32_t expected)
+{
+    log_print("SB manifest reject field=");
+    log_print(field);
+    log_print(" value=");
+    log_print_u32_hex(value);
+    log_print(" expected=");
+    log_print_u32_hex(expected);
+    log_print("\r\n");
+}
+
+static void secure_boot_log_manifest_size(uint32_t image_size)
+{
+    log_print("SB manifest reject field=image_size value=");
+    log_print_u32_dec(image_size);
+    log_print(" min=8 max=");
+    log_print_u32_dec(secure_boot_slot_max_image_size());
+    log_print("\r\n");
+}
+
+static void secure_boot_log_vector_reject(const char *field,
+                                          uint32_t image_base,
+                                          uint32_t image_size,
+                                          uint32_t initial_msp,
+                                          uint32_t reset_handler,
+                                          uint32_t reset_address)
+{
+    log_print("SB vector reject field=");
+    log_print(field);
+    log_print(" image_base=");
+    log_print_u32_hex(image_base);
+    log_print(" image_size=");
+    log_print_u32_dec(image_size);
+    log_print(" msp=");
+    log_print_u32_hex(initial_msp);
+    log_print(" reset=");
+    log_print_u32_hex(reset_handler);
+    log_print(" reset_addr=");
+    log_print_u32_hex(reset_address);
+    log_print("\r\n");
+}
+
+static void secure_boot_log_rollback(uint32_t image_version,
+                                     uint32_t minimum_version)
+{
+    log_print("SB verify failed: rollback field=image_version value=");
+    log_print_u32_dec(image_version);
+    log_print(" minimum=");
+    log_print_u32_dec(minimum_version);
+    log_print("\r\n");
+}
+#else
+#define secure_boot_log_manifest_u32(field, value, expected) ((void)0)
+#define secure_boot_log_manifest_size(image_size)            ((void)0)
+#define secure_boot_log_vector_reject(field, image_base, image_size, \
+                                      initial_msp, reset_handler,    \
+                                      reset_address)                 \
+    ((void)0)
+#define secure_boot_log_rollback(image_version, minimum_version) ((void)0)
 #endif
 
 /**
@@ -129,9 +190,26 @@ static bool secure_boot_vector_table_is_valid(uint32_t image_base, uint32_t imag
     uint32_t reset_handler = vectors[1];
     uint32_t reset_address = reset_handler & ~1UL;
 
-    return initial_msp >= BOOT_RAM_BASE && initial_msp <= BOOT_RAM_END &&
-           (reset_handler & 1UL) != 0U && reset_address >= image_base &&
-           reset_address < image_base + image_size;
+    if (initial_msp < BOOT_RAM_BASE || initial_msp > BOOT_RAM_END) {
+        secure_boot_log_vector_reject("initial_msp", image_base, image_size,
+                                      initial_msp, reset_handler,
+                                      reset_address);
+        return false;
+    }
+    if ((reset_handler & 1UL) == 0U) {
+        secure_boot_log_vector_reject("reset_handler_thumb", image_base,
+                                      image_size, initial_msp, reset_handler,
+                                      reset_address);
+        return false;
+    }
+    if (reset_address < image_base || reset_address >= image_base + image_size) {
+        secure_boot_log_vector_reject("reset_handler_range", image_base,
+                                      image_size, initial_msp, reset_handler,
+                                      reset_address);
+        return false;
+    }
+
+    return true;
 }
 
 /** @copydoc secure_boot_verify_slot */
@@ -153,11 +231,29 @@ secure_boot_result_t secure_boot_verify_slot(secure_boot_slot_t slot,
 
     image_base = secure_boot_slot_base(slot);
     manifest = secure_boot_manifest_for_slot(slot);
-    if (manifest->magic != SECURE_BOOT_MANIFEST_MAGIC ||
-        manifest->format_version != SECURE_BOOT_MANIFEST_VERSION ||
-        manifest->signed_size != offsetof(secure_boot_manifest_t, signature) ||
-        manifest->image_size < 8U ||
+    if (manifest->magic != SECURE_BOOT_MANIFEST_MAGIC) {
+        secure_boot_log_manifest_u32("magic", manifest->magic,
+                                     SECURE_BOOT_MANIFEST_MAGIC);
+        log_print("SB verify failed: manifest header\r\n");
+        return SECURE_BOOT_ERROR_MANIFEST;
+    }
+    if (manifest->format_version != SECURE_BOOT_MANIFEST_VERSION) {
+        secure_boot_log_manifest_u32("format_version",
+                                     manifest->format_version,
+                                     SECURE_BOOT_MANIFEST_VERSION);
+        log_print("SB verify failed: manifest header\r\n");
+        return SECURE_BOOT_ERROR_MANIFEST;
+    }
+    if (manifest->signed_size != offsetof(secure_boot_manifest_t, signature)) {
+        secure_boot_log_manifest_u32(
+            "signed_size", manifest->signed_size,
+            offsetof(secure_boot_manifest_t, signature));
+        log_print("SB verify failed: manifest header\r\n");
+        return SECURE_BOOT_ERROR_MANIFEST;
+    }
+    if (manifest->image_size < 8U ||
         manifest->image_size > secure_boot_slot_max_image_size()) {
+        secure_boot_log_manifest_size(manifest->image_size);
         log_print("SB verify failed: manifest header\r\n");
         return SECURE_BOOT_ERROR_MANIFEST;
     }
@@ -171,13 +267,13 @@ secure_boot_result_t secure_boot_verify_slot(secure_boot_slot_t slot,
     if (!crypto_manager_constant_time_equal(image_digest, manifest->image_sha256,
                                             sizeof(image_digest))) {
         crypto_manager_secure_zero(image_digest, sizeof(image_digest));
-        log_print("SB verify failed: image hash\r\n");
+        log_print("SB verify failed: image hash field=image_sha256\r\n");
         return SECURE_BOOT_ERROR_HASH;
     }
 
     if (!crypto_manager_public_key_is_provisioned()) {
         crypto_manager_secure_zero(image_digest, sizeof(image_digest));
-        log_print("SB verify failed: public key missing\r\n");
+        log_print("SB verify failed: public key field=secure_boot_public_key\r\n");
         return SECURE_BOOT_ERROR_SIGNATURE;
     }
 
@@ -186,7 +282,7 @@ secure_boot_result_t secure_boot_verify_slot(secure_boot_slot_t slot,
                                                 manifest->signature)) {
         crypto_manager_secure_zero(image_digest, sizeof(image_digest));
         crypto_manager_secure_zero(manifest_digest, sizeof(manifest_digest));
-        log_print("SB verify failed: manifest signature\r\n");
+        log_print("SB verify failed: manifest signature field=signature\r\n");
         return SECURE_BOOT_ERROR_SIGNATURE;
     }
 
@@ -227,6 +323,7 @@ static void secure_boot_default_status(secure_boot_status_t *status)
     status->magic = SECURE_BOOT_STATUS_MAGIC;
     status->format_version = SECURE_BOOT_STATUS_VERSION;
     status->record_size = sizeof(*status);
+    status->active_slot = SECURE_BOOT_SLOT_NONE;
     status->confirmed_slot = SECURE_BOOT_SLOT_NONE;
     status->trial_slot = SECURE_BOOT_SLOT_NONE;
     status->update_slot = SECURE_BOOT_SLOT_NONE;
@@ -396,8 +493,9 @@ static secure_boot_result_t secure_boot_verify_acceptable_slot(
         return result;
     }
     if ((*manifest_out)->image_version < minimum_version) {
+        uint32_t image_version = (*manifest_out)->image_version;
         *manifest_out = NULL;
-        log_print("SB verify failed: rollback\r\n");
+        secure_boot_log_rollback(image_version, minimum_version);
         return SECURE_BOOT_ERROR_ROLLBACK;
     }
     return SECURE_BOOT_OK;
@@ -418,6 +516,7 @@ secure_boot_result_t secure_boot_request_trial(secure_boot_slot_t slot)
 
     status.trial_slot = (uint32_t)slot;
     status.trial_boot_count = 0U;
+    status.active_slot = (uint32_t)slot;
     secure_boot_clear_update_marker(&status);
     return secure_boot_commit_status(&status, source);
 }
@@ -441,6 +540,7 @@ secure_boot_result_t secure_boot_confirm_running_image(secure_boot_slot_t slot)
     }
 
     status.confirmed_slot = (uint32_t)slot;
+    status.active_slot = (uint32_t)slot;
     status.trial_slot = SECURE_BOOT_SLOT_NONE;
     status.trial_boot_count = 0U;
     status.minimum_version = manifest->image_version;
@@ -517,6 +617,13 @@ static secure_boot_slot_t secure_boot_select_active_slot(const secure_boot_statu
 {
     const secure_boot_manifest_t *manifest = NULL;
 
+    if (secure_boot_slot_is_valid((secure_boot_slot_t)status->active_slot) &&
+        secure_boot_verify_acceptable_slot((secure_boot_slot_t)status->active_slot,
+                                           status->minimum_version,
+                                           &manifest) == SECURE_BOOT_OK) {
+        return (secure_boot_slot_t)status->active_slot;
+    }
+
     if (secure_boot_slot_is_valid((secure_boot_slot_t)status->trial_slot) &&
         status->trial_boot_count > 0U &&
         secure_boot_verify_acceptable_slot((secure_boot_slot_t)status->trial_slot,
@@ -540,7 +647,6 @@ secure_boot_result_t secure_boot_select_update_slot(
     secure_boot_slot_t *selected_slot)
 {
     secure_boot_status_t status;
-    const secure_boot_manifest_t *manifest = NULL;
     secure_boot_slot_t active_slot;
     secure_boot_slot_t candidate_slot;
 
@@ -561,10 +667,7 @@ secure_boot_result_t secure_boot_select_update_slot(
     }
 
     candidate_slot = secure_boot_opposite_slot(active_slot);
-    if (!secure_boot_slot_is_valid(candidate_slot) ||
-        (status.confirmed_slot == (uint32_t)candidate_slot &&
-         secure_boot_verify_acceptable_slot(candidate_slot, status.minimum_version,
-                                            &manifest) == SECURE_BOOT_OK)) {
+    if (!secure_boot_slot_is_valid(candidate_slot)) {
         return SECURE_BOOT_ERROR_STATE;
     }
 
@@ -599,6 +702,7 @@ secure_boot_result_t secure_boot_boot(void)
     const secure_boot_status_t *source = secure_boot_load_status(&status);
     const secure_boot_manifest_t *manifest = NULL;
     secure_boot_slot_t selected = SECURE_BOOT_SLOT_NONE;
+    secure_boot_slot_t expired_trial = SECURE_BOOT_SLOT_NONE;
     secure_boot_result_t result;
 
     if (secure_boot_slot_is_valid((secure_boot_slot_t)status.trial_slot)) {
@@ -613,8 +717,15 @@ secure_boot_result_t secure_boot_boot(void)
             }
             selected = (secure_boot_slot_t)status.trial_slot;
         } else {
+            expired_trial = (secure_boot_slot_t)status.trial_slot;
             status.trial_slot = SECURE_BOOT_SLOT_NONE;
             status.trial_boot_count = 0U;
+            if (status.active_slot == (uint32_t)expired_trial) {
+                status.active_slot = secure_boot_slot_is_valid(
+                                         (secure_boot_slot_t)status.confirmed_slot)
+                                         ? status.confirmed_slot
+                                         : SECURE_BOOT_SLOT_NONE;
+            }
             result = secure_boot_commit_status(&status, source);
             if (result != SECURE_BOOT_OK) {
                 return result;
@@ -634,6 +745,14 @@ secure_boot_result_t secure_boot_boot(void)
     }
     if (selected == SECURE_BOOT_SLOT_NONE) {
         return SECURE_BOOT_ERROR_NO_VALID_IMAGE;
+    }
+
+    if (status.active_slot != (uint32_t)selected) {
+        status.active_slot = (uint32_t)selected;
+        result = secure_boot_commit_status(&status, source);
+        if (result != SECURE_BOOT_OK) {
+            return result;
+        }
     }
 
     secure_boot_jump_to_image(selected);

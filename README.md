@@ -118,10 +118,15 @@ Manifest/header requirements:
 Update target ownership:
 
 - The PC FOTA tool does not send, choose, validate, or display a Flash slot.
-- The bootloader infers the Flash write region from the firmware vector table
-  in the first `UPDATE_CHUNK`, then marks the update in progress, erases, and
-  writes internally.
-- UART reports do not expose the selected internal write region.
+- The bootloader selects the inactive Flash slot from persistent boot status:
+  if no active image can be identified it selects APP1; otherwise it selects
+  the opposite slot from `active_slot`.
+- The first `UPDATE_CHUNK` must still contain a vector table linked for the
+  selected target slot. A firmware image linked for APP1 is rejected when the
+  selected target is APP2, and vice versa.
+- After a received image is verified and accepted as a trial image,
+  `active_slot` is updated to that slot so the next FOTA writes the opposite
+  slot.
 
 ## Firmware System Architecture
 
@@ -142,7 +147,8 @@ The bootloader firmware is responsible for:
 
 - Reporting bootloader entry over UART.
 - Receiving new firmware over UART.
-- Inferring the internal Flash write region from the firmware vector table.
+- Selecting the inactive internal Flash slot from persistent boot status.
+- Validating that the incoming firmware vector table matches the selected slot.
 - Writing firmware to that internal region.
 - Verifying the firmware SHA-256 hash.
 - Verifying the ECDSA P-256 manifest signature.
@@ -254,6 +260,7 @@ backup page. The bootloader selects the valid record with the highest
 | Field              | Purpose                                             |
 | ------------------ | --------------------------------------------------- |
 | `generation`       | Monotonic status generation counter                 |
+| `active_slot`      | Slot treated as active for the next FOTA decision   |
 | `confirmed_slot`   | Last application confirmed as healthy               |
 | `trial_slot`       | Candidate application allowed to boot once          |
 | `trial_boot_count` | Trial boot counter                                  |
@@ -350,7 +357,8 @@ CRC is CRC-16/MCRF4XX over `len_hi`, `len_lo`, and `payload`.
 
 `UPDATE_CHUNK` data is currently limited to 200 bytes. The first chunk must
 contain at least the first 8 firmware bytes so the bootloader can inspect the
-vector table before erasing Flash.
+vector table and confirm it matches the selected target slot before erasing
+Flash.
 
 ### Reports
 
@@ -370,7 +378,9 @@ Report payload is 20 bytes:
 [1] command
 [2] boot_controller_state
 [3] secure_boot_result
-[4..6] reserved
+[4] active_slot
+[5] confirmed_slot
+[6] trial_slot
 [7] update_state
 [8..11] received_image_size  little-endian
 [12..15] expected_image_size little-endian
@@ -417,7 +427,8 @@ Owns secure boot policy:
 - Computes SHA-256 over the image stored in Flash.
 - Verifies the ECDSA P-256 manifest signature.
 - Prevents rollback with `minimum_version`.
-- Manages `confirmed_slot`, `trial_slot`, and `trial_boot_count`.
+- Manages `active_slot`, `confirmed_slot`, `trial_slot`, and
+  `trial_boot_count`.
 - Manages `update_state/update_slot` to detect interrupted updates.
 
 ### `boot_flash`
@@ -479,7 +490,7 @@ flowchart TD
     WRITE --> END[UPDATE_END]
     END --> VERIFY[Verify SHA + ECDSA]
     VERIFY --> MANIFEST[Write manifest]
-    MANIFEST --> TRIAL[Set trial_slot]
+    MANIFEST --> TRIAL[Set active_slot + trial_slot]
     TRIAL --> JUMP[Jump to app]
 ```
 
@@ -501,11 +512,12 @@ sequenceDiagram
 
     BL->>PC: BOOT report
     PC->>BL: UPDATE_BEGIN(size,version,sha,signature)
+    BL->>SB: secure_boot_select_update_slot()
     BL->>PC: ACK UPDATE_BEGIN
 
     loop each chunk
         PC->>BL: UPDATE_CHUNK(offset,data)
-        BL->>BL: infer write region from vector table on first chunk
+        BL->>BL: validate vector table matches selected target
         BL->>SB: secure_boot_begin_update(internal target)
         SB->>FL: write status update_state=RECEIVING
         BL->>FL: erase internal target on first chunk
@@ -517,7 +529,7 @@ sequenceDiagram
     BL->>SB: verify SHA-256 + ECDSA P-256
     BL->>FL: write manifest
     BL->>SB: secure_boot_request_trial(internal target)
-    SB->>FL: write status trial_slot
+    SB->>FL: write status active_slot + trial_slot
     BL->>PC: ACK UPDATE_END
     BL->>PC: JUMP report
     BL->>APP: jump to vector table

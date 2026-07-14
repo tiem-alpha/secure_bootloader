@@ -32,6 +32,7 @@ CMD_SLOT_INFO = 0x05
 CMD_UPDATE_BEGIN = 0x10
 CMD_UPDATE_CHUNK = 0x11
 CMD_UPDATE_END = 0x12
+CMD_UPDATE_ABORT = 0x13
 
 REPORT_STATUS = 0x80
 REPORT_ACK = 0x81
@@ -43,6 +44,11 @@ REPORT_SLOT_INFO = 0x85
 SECURE_BOOT_MANIFEST_MAGIC = 0x53424D46
 SECURE_BOOT_MANIFEST_VERSION = 1
 SECURE_BOOT_MANIFEST_SIGNED_SIZE = 52
+
+BOOT_APP1_BASE = 0x0800A000
+BOOT_APP2_BASE = 0x0800C800
+BOOT_RAM_BASE = 0x20000000
+BOOT_RAM_END = 0x20005000
 
 DEFAULT_CHUNK_SIZE = 200
 MIN_CHUNK_SIZE = 8
@@ -84,6 +90,49 @@ def pack_frame(payload: bytes) -> bytes:
 
 def result_name(value: int) -> str:
     return RESULT_NAMES.get(value, f"UNKNOWN_{value}")
+
+
+def slot_name(value: int) -> str:
+    return {0: "NONE", 1: "APP1", 2: "APP2"}.get(value, f"INVALID_{value}")
+
+
+def firmware_vector_info(firmware: bytes) -> dict:
+    if len(firmware) < 8:
+        raise ValueError("Firmware is too small to contain a vector table")
+
+    initial_msp, reset_handler = struct.unpack_from("<II", firmware, 0)
+    reset_address = reset_handler & ~1
+    linked_slot = 0
+    if BOOT_APP1_BASE <= reset_address < BOOT_APP1_BASE + len(firmware):
+        linked_slot = 1
+    elif BOOT_APP2_BASE <= reset_address < BOOT_APP2_BASE + len(firmware):
+        linked_slot = 2
+
+    return {
+        "initial_msp": initial_msp,
+        "reset_handler": reset_handler,
+        "reset_address": reset_address,
+        "msp_valid": BOOT_RAM_BASE <= initial_msp <= BOOT_RAM_END,
+        "reset_thumb": bool(reset_handler & 1),
+        "linked_slot": linked_slot,
+    }
+
+
+def describe_firmware_vector(info: dict) -> str:
+    return (
+        f"linked={slot_name(info['linked_slot'])} "
+        f"msp=0x{info['initial_msp']:08X} "
+        f"reset=0x{info['reset_handler']:08X}"
+    )
+
+
+def expected_update_slot_from_report(report: dict) -> int:
+    active_slot = report.get("active_slot", 0)
+    if active_slot == 1:
+        return 2
+    if active_slot == 2:
+        return 1
+    return 1
 
 
 class FrameReader:
@@ -214,6 +263,7 @@ def generate_key_cert(out_dir: str, common_name: str) -> tuple[str, str, str]:
 def sign_firmware(firmware_path: str, key_path: str, version: int) -> dict:
     firmware = Path(firmware_path).read_bytes()
     private_key = load_private_key(key_path)
+    vector_info = firmware_vector_info(firmware)
     image_hash = hashlib.sha256(firmware).digest()
     signed_region = struct.pack(
         "<IHHIII32s",
@@ -232,6 +282,9 @@ def sign_firmware(firmware_path: str, key_path: str, version: int) -> dict:
         "image_size": len(firmware),
         "image_version": version,
         "image_sha256": image_hash.hex(),
+        "linked_slot": slot_name(vector_info["linked_slot"]),
+        "vector_initial_msp": f"0x{vector_info['initial_msp']:08X}",
+        "vector_reset_handler": f"0x{vector_info['reset_handler']:08X}",
         "manifest_signed_region": signed_region.hex(),
         "signature_raw": signature_raw.hex(),
         "public_key_raw": p256_public_raw(private_key).hex(),
@@ -264,6 +317,9 @@ def parse_report(payload: bytes) -> dict:
         "command": payload[1],
         "controller_state": payload[2],
         "result": payload[3],
+        "active_slot": payload[4],
+        "confirmed_slot": payload[5],
+        "trial_slot": payload[6],
         "update_state": payload[7],
         "received_size": struct.unpack_from("<I", payload, 8)[0],
         "expected_size": struct.unpack_from("<I", payload, 12)[0],
@@ -356,6 +412,9 @@ class FotaClient:
                     self.log(
                         f"RX {report_name(report['report'])} cmd=0x{report['command']:02X} "
                         f"result={report['result']}({result_name(report['result'])}) "
+                        f"active={slot_name(report['active_slot'])} "
+                        f"confirmed={slot_name(report['confirmed_slot'])} "
+                        f"trial={slot_name(report['trial_slot'])} "
                         f"rx={report['received_size']}/{report['expected_size']} "
                         f"update_state={report['update_state']}"
                     )
@@ -396,6 +455,10 @@ class FotaClient:
             )
         return report
 
+    def abort_update(self) -> dict:
+        self.log("TX UPDATE_ABORT command")
+        return self.send_command_expect_ack(bytes([CMD_UPDATE_ABORT]), timeout_s=3.0)
+
     def reset_bootloader(self):
         self.log("TX RESET command")
         self.send_payload(bytes([CMD_RESET]))
@@ -407,6 +470,7 @@ class FotaClient:
         delay_s: float,
     ):
         firmware = Path(signed["firmware_path"]).read_bytes()
+        vector_info = firmware_vector_info(firmware)
         image_hash = bytes.fromhex(signed["image_sha256"])
         signature = bytes.fromhex(signed["signature_raw"])
         begin = (
@@ -424,6 +488,27 @@ class FotaClient:
             raise RuntimeError(
                 f"Bootloader expected size {begin_report['expected_size']} "
                 f"does not match firmware size {signed['image_size']}"
+            )
+        target_slot = expected_update_slot_from_report(begin_report)
+        self.log(f"Firmware vector: {describe_firmware_vector(vector_info)}")
+        self.log(f"Bootloader selected target slot: {slot_name(target_slot)}")
+        if (
+            not vector_info["msp_valid"]
+            or not vector_info["reset_thumb"]
+            or vector_info["linked_slot"] == 0
+        ):
+            self.abort_update()
+            raise RuntimeError(
+                "Firmware vector table is invalid for this flash layout "
+                f"({describe_firmware_vector(vector_info)})"
+            )
+        if vector_info["linked_slot"] != target_slot:
+            self.abort_update()
+            raise RuntimeError(
+                f"Firmware is linked for {slot_name(vector_info['linked_slot'])}, "
+                f"but bootloader selected {slot_name(target_slot)}. "
+                f"Rebuild the application for base "
+                f"0x{(BOOT_APP1_BASE if target_slot == 1 else BOOT_APP2_BASE):08X}."
             )
         self.log("Bootloader accepted update")
 
@@ -570,6 +655,11 @@ class FotaToolGui:
             version = int(self.version.get(), 0)
             self.signed = sign_firmware(self.fw_path.get(), self.key_path.get(), version)
             self.log(f"Signed FW size={self.signed['image_size']} version={version}")
+            self.log(
+                f"Vector linked={self.signed['linked_slot']} "
+                f"msp={self.signed['vector_initial_msp']} "
+                f"reset={self.signed['vector_reset_handler']}"
+            )
             self.log(f"SHA256={self.signed['image_sha256']}")
             self.log(f"Signature={self.signed['signature_raw']}")
         except Exception as exc:
@@ -656,6 +746,19 @@ def cli_sign(args) -> int:
     return 0
 
 
+def cli_inspect(args) -> int:
+    firmware = Path(args.firmware).read_bytes()
+    info = firmware_vector_info(firmware)
+    print(describe_firmware_vector(info))
+    if not info["msp_valid"]:
+        print("warning: initial MSP is outside SRAM")
+    if not info["reset_thumb"]:
+        print("warning: reset handler is not a Thumb address")
+    if info["linked_slot"] == 0:
+        print("warning: reset handler does not match APP1 or APP2 image range")
+    return 0
+
+
 def cli_gen_key(args) -> int:
     key, cert, pub_c = generate_key_cert(args.out_dir, args.common_name)
     print(f"key={key}")
@@ -709,6 +812,10 @@ def main():
     sign.add_argument("--version", default="1")
     sign.add_argument("--out")
     sign.set_defaults(func=cli_sign)
+
+    inspect = sub.add_parser("inspect", help="inspect firmware vector table and inferred slot")
+    inspect.add_argument("--firmware", required=True)
+    inspect.set_defaults(func=cli_inspect)
 
     slot_info = sub.add_parser("slot-info", help="request APP1/APP2 firmware metadata from bootloader")
     slot_info.add_argument("--port", required=True)

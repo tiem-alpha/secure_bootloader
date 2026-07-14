@@ -31,7 +31,7 @@ extern "C" {
 /** Status record magic value: ASCII "SBST" in little-endian storage. */
 #define SECURE_BOOT_STATUS_MAGIC     0x53425354UL /* "SBST" */
 /** Current persistent status record format version. */
-#define SECURE_BOOT_STATUS_VERSION   1U
+#define SECURE_BOOT_STATUS_VERSION   2U
 
 /** Logical application slot identifier. */
 typedef enum {
@@ -117,6 +117,8 @@ typedef struct __attribute__((packed)) {
     uint16_t record_size;
     /** Monotonic generation counter used to choose the newest valid copy. */
     uint32_t generation;
+    /** Slot treated as active for the next update-slot decision. */
+    uint32_t active_slot;
     /** Last slot confirmed as healthy by the application. */
     uint32_t confirmed_slot;
     /** Candidate slot allowed to boot in trial mode. */
@@ -135,7 +137,7 @@ typedef struct __attribute__((packed)) {
 
 _Static_assert(sizeof(secure_boot_manifest_t) == SECURE_BOOT_MANIFEST_SIZE,
                "Secure boot manifest must occupy 256 bytes.");
-_Static_assert(sizeof(secure_boot_status_t) == 40U,
+_Static_assert(sizeof(secure_boot_status_t) == 44U,
                "Unexpected secure boot status size.");
 
 /**
@@ -215,10 +217,8 @@ secure_boot_result_t secure_boot_recover_interrupted_update(void);
  *
  * @details
  * When the bootloader can identify an active or fallback application slot, the
- * opposite slot is selected so the running image is not erased. If a trial
- * image is active while a different confirmed rollback slot exists, no safe
- * update slot is available with the two-slot layout and the request is
- * rejected. When no active image can be identified, APP1 is selected.
+ * opposite slot is selected so the running image is not erased. When no active
+ * image can be identified, APP1 is selected.
  *
  * @param[out] selected_slot Slot selected by secure boot policy.
  *

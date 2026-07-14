@@ -61,7 +61,7 @@ extern "C" {
 /*
  * Report payload:
  * [0] report, [1] command, [2] boot_controller_state, [3] secure_boot_result,
- * [4..6] reserved,
+ * [4] active_slot, [5] confirmed_slot, [6] trial_slot,
  * [7] update_state,
  * [8..11] received_image_size, [12..15] expected_image_size,
  * [16..19] image_version.

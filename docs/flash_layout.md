@@ -18,8 +18,10 @@ The manifest is signed as raw bytes from offset 0 through the byte before
 signed digest is SHA-256. `image_sha256` is SHA-256 of exactly `image_size` bytes
 starting at the application vector table.
 
-The first two data Flash pages contain alternating status records. A candidate
-image is booted once after `secure_boot_request_trial()`. The candidate must call
+The first two data Flash pages contain alternating status records. `active_slot`
+tracks the slot protected from the next FOTA erase; when no active image can be
+identified, APP1 is used as the first update target. A candidate image is booted
+once after `secure_boot_request_trial()`. The candidate must call
 `secure_boot_confirm_running_image()` after its self-test; otherwise the next
 reset clears the trial and boots the last confirmed valid image.
 

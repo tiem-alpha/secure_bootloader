@@ -80,9 +80,9 @@ bool boot_uart_build_report(uint8_t *payload, uint16_t capacity, uint8_t report,
     payload[1] = command;
     payload[2] = controller_state;
     payload[3] = (uint8_t)result;
-    payload[4] = 0U;
-    payload[5] = 0U;
-    payload[6] = 0U;
+    payload[4] = (uint8_t)status->active_slot;
+    payload[5] = (uint8_t)status->confirmed_slot;
+    payload[6] = (uint8_t)status->trial_slot;
     payload[7] = (uint8_t)status->update_state;
     boot_uart_write_u32_le(&payload[8], received_image_size);
     boot_uart_write_u32_le(&payload[12], expected_image_size);

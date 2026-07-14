@@ -66,8 +66,9 @@ The UART tool uses the bootloader protocol:
 
 Click `Start update` to send `RESET`, wait for the periodic `BOOT` status
 report, and transfer the signed firmware. The PC tool does not send, choose,
-validate, or display a Flash slot; the bootloader infers the internal write
-region from the firmware vector table in the first chunk.
+validate, or display a Flash slot; the bootloader selects the inactive slot
+from persistent boot status and validates that the first chunk vector table was
+linked for that selected slot.
 If the application does not handle `RESET` and USB-UART DTR/RTS is not wired to
 the target reset/boot circuitry, reset the MCU manually after clicking
 `Start update`.

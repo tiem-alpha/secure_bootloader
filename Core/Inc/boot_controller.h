@@ -229,9 +229,9 @@ void boot_controller_poll(boot_controller_t *controller);
  * - BOOT_NOW: schedule immediate application boot when not receiving/verifying.
  * - RESET: request a system reset when not receiving/verifying an update.
  * - UPDATE_BEGIN: validate declared image metadata and enter RECEIVING.
- * - UPDATE_CHUNK: require exact sequential offset, select the Flash target from
- *   the image vector table on the first chunk, write data to Flash, update
- *   streaming SHA-256, and refresh receive timeout.
+ * - UPDATE_CHUNK: require exact sequential offset, validate that the first
+ *   chunk vector table matches the selected Flash target, write data to Flash,
+ *   update streaming SHA-256, and refresh receive timeout.
  * - UPDATE_END: require full image length, finalize Flash write, compare image
  *   hash, write signed manifest, request trial boot, and schedule boot.
  * - UPDATE_ABORT: clear transfer state, abort persistent update marker, and

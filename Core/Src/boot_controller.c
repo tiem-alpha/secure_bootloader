@@ -151,6 +151,8 @@ static void boot_log_slot_status(const secure_boot_status_t *status)
 
     log_print("FW current slot status: confirmed=");
     log_print(boot_slot_name((secure_boot_slot_t)status->confirmed_slot));
+    log_print(" active=");
+    log_print(boot_slot_name((secure_boot_slot_t)status->active_slot));
     log_print(" trial=");
     log_print(boot_slot_name((secure_boot_slot_t)status->trial_slot));
     log_print(" update=");
@@ -207,6 +209,70 @@ static void boot_log_valid_slot_versions(const secure_boot_status_t *status)
     boot_log_valid_slot_version(SECURE_BOOT_SLOT_APP2, minimum_version);
 }
 
+static void boot_log_vector_context(secure_boot_slot_t slot, uint32_t slot_base,
+                                    uint32_t image_size, uint16_t chunk_length,
+                                    uint32_t initial_msp,
+                                    uint32_t reset_handler,
+                                    uint32_t reset_address)
+{
+    log_print("FW vector context: target=");
+    log_print(boot_slot_name(slot));
+    log_print(" slot_base=");
+    log_print_u32_hex(slot_base);
+    log_print(" image_size=");
+    log_print_u32_dec(image_size);
+    log_print(" chunk_len=");
+    log_print_u32_dec(chunk_length);
+    log_print(" msp=");
+    log_print_u32_hex(initial_msp);
+    log_print(" reset=");
+    log_print_u32_hex(reset_handler);
+    log_print(" reset_addr=");
+    log_print_u32_hex(reset_address);
+    log_print("\r\n");
+}
+
+static void boot_log_vector_reject(const char *field, secure_boot_slot_t slot,
+                                   uint32_t slot_base, uint32_t image_size,
+                                   uint16_t chunk_length,
+                                   uint32_t initial_msp,
+                                   uint32_t reset_handler,
+                                   uint32_t reset_address)
+{
+    log_print("FW vector reject field=");
+    log_print(field);
+    log_print("\r\n");
+    boot_log_vector_context(slot, slot_base, image_size, chunk_length,
+                            initial_msp, reset_handler, reset_address);
+}
+
+static void boot_log_size_reject(uint32_t image_size)
+{
+    log_print("FW update reject field=image_size value=");
+    log_print_u32_dec(image_size);
+    log_print(" min=8 max=");
+    log_print_u32_dec(secure_boot_slot_max_image_size());
+    log_print("\r\n");
+}
+
+static void boot_log_chunk_reject(const char *field, uint32_t offset,
+                                  uint16_t chunk_length,
+                                  uint32_t received_size,
+                                  uint32_t expected_size)
+{
+    log_print("FW chunk reject field=");
+    log_print(field);
+    log_print(" offset=");
+    log_print_u32_dec(offset);
+    log_print(" chunk_len=");
+    log_print_u32_dec(chunk_length);
+    log_print(" received=");
+    log_print_u32_dec(received_size);
+    log_print(" expected=");
+    log_print_u32_dec(expected_size);
+    log_print("\r\n");
+}
+
 #else
 
 #define boot_log_command_rx(command)              ((void)0)
@@ -214,6 +280,13 @@ static void boot_log_valid_slot_versions(const secure_boot_status_t *status)
 #define boot_log_update_error(result)             ((void)0)
 #define boot_log_slot_status(status)              ((void)0)
 #define boot_log_valid_slot_versions(status)      ((void)0)
+#define boot_log_vector_reject(field, slot, slot_base, image_size, chunk_length, \
+                               initial_msp, reset_handler, reset_address)       \
+    ((void)0)
+#define boot_log_size_reject(image_size) ((void)0)
+#define boot_log_chunk_reject(field, offset, chunk_length, received_size, \
+                              expected_size)                             \
+    ((void)0)
 
 #endif
 
@@ -395,49 +468,74 @@ static bool boot_image_size_is_valid(uint32_t image_size)
 }
 
 /**
- * @brief Select the Flash write target from the image vector table.
+ * @brief Validate that the image vector table matches the selected slot.
  *
  * @details
- * The host does not send a slot. The first firmware chunk must start at offset
- * zero and contain the initial MSP and reset handler. The reset handler address
- * tells the bootloader which Flash region this image was linked for.
+ * The host does not send a slot. Secure boot policy selects the inactive slot
+ * before Flash erase. The first firmware chunk must start at offset zero and
+ * contain the initial MSP and reset handler so the bootloader can reject an
+ * image that was linked for the other slot.
  */
-static secure_boot_slot_t boot_select_target_from_vector(const uint8_t *data,
-                                                         uint16_t length,
-                                                         uint32_t image_size)
+static bool boot_vector_matches_slot(secure_boot_slot_t slot,
+                                     const uint8_t *data, uint16_t length,
+                                     uint32_t image_size)
 {
+    uint32_t slot_base;
     uint32_t initial_msp;
     uint32_t reset_handler;
     uint32_t reset_address;
 
-    if (data == NULL || length < 8U || !boot_image_size_is_valid(image_size)) {
-        return SECURE_BOOT_SLOT_NONE;
+    slot_base = secure_boot_slot_base(slot);
+    if (slot_base == 0U) {
+        boot_log_vector_reject("target_slot", slot, slot_base, image_size,
+                               length, 0U, 0U, 0U);
+        return false;
+    }
+    if (data == NULL) {
+        boot_log_vector_reject("chunk_data", slot, slot_base, image_size,
+                               length, 0U, 0U, 0U);
+        return false;
+    }
+    if (length < 8U) {
+        boot_log_vector_reject("chunk_len", slot, slot_base, image_size,
+                               length, 0U, 0U, 0U);
+        return false;
+    }
+    if (!boot_image_size_is_valid(image_size)) {
+        boot_log_vector_reject("image_size", slot, slot_base, image_size,
+                               length, 0U, 0U, 0U);
+        return false;
     }
 
     initial_msp = boot_uart_read_u32_le(&data[0]);
     reset_handler = boot_uart_read_u32_le(&data[4]);
     reset_address = reset_handler & ~1UL;
 
-    if (initial_msp < BOOT_RAM_BASE || initial_msp > BOOT_RAM_END ||
-        (reset_handler & 1UL) == 0U) {
-        return SECURE_BOOT_SLOT_NONE;
+    if (initial_msp < BOOT_RAM_BASE || initial_msp > BOOT_RAM_END) {
+        boot_log_vector_reject("initial_msp", slot, slot_base, image_size,
+                               length, initial_msp, reset_handler,
+                               reset_address);
+        return false;
+    }
+    if ((reset_handler & 1UL) == 0U) {
+        boot_log_vector_reject("reset_handler_thumb", slot, slot_base,
+                               image_size, length, initial_msp, reset_handler,
+                               reset_address);
+        return false;
     }
 
-    if (reset_address >= BOOT_APP1_BASE &&
-        reset_address < (BOOT_APP1_BASE + image_size)) {
-        return SECURE_BOOT_SLOT_APP1;
+    if (reset_address < slot_base || reset_address >= (slot_base + image_size)) {
+        boot_log_vector_reject("reset_handler_range", slot, slot_base,
+                               image_size, length, initial_msp, reset_handler,
+                               reset_address);
+        return false;
     }
 
-    if (reset_address >= BOOT_APP2_BASE &&
-        reset_address < (BOOT_APP2_BASE + image_size)) {
-        return SECURE_BOOT_SLOT_APP2;
-    }
-
-    return SECURE_BOOT_SLOT_NONE;
+    return true;
 }
 
 /**
- * @brief Start Flash erase/write once the first image chunk identifies target.
+ * @brief Start Flash erase/write once the first image chunk validates target.
  */
 static bool boot_prepare_flash_target(boot_controller_t *controller,
                                       const boot_uart_update_chunk_t *request)
@@ -448,10 +546,16 @@ static bool boot_prepare_flash_target(boot_controller_t *controller,
         return false;
     }
 
-    target_slot = boot_select_target_from_vector(
-        request->data, request->length, controller->expected_image_size);
+    target_slot = controller->target_slot;
     if (target_slot == SECURE_BOOT_SLOT_NONE) {
-        log_print("FW rejected image vector table\r\n");
+        controller->last_result = SECURE_BOOT_ERROR_STATE;
+        boot_log_update_error(controller->last_result);
+        return false;
+    }
+
+    if (!boot_vector_matches_slot(target_slot, request->data, request->length,
+                                  controller->expected_image_size)) {
+        log_print("FW rejected image vector table for target slot\r\n");
         controller->last_result = SECURE_BOOT_ERROR_MANIFEST;
         boot_log_update_error(controller->last_result);
         return false;
@@ -510,8 +614,9 @@ static void boot_schedule_boot(boot_controller_t *controller)
  *
  * @details
  * Validates command shape and state, copies host-provided image metadata,
- * starts the streaming SHA-256 context, then enters RECEIVING. The Flash
- * target is selected from the first firmware chunk's vector table.
+ * selects the inactive Flash target, starts the streaming SHA-256 context, then
+ * enters RECEIVING. The first firmware chunk must still prove that the image
+ * vector table was linked for the selected target slot.
  *
  * @param[in,out] controller Controller instance. Must not be NULL.
  * @param[in] data Decoded UPDATE_BEGIN payload.
@@ -526,6 +631,7 @@ static void boot_begin_update(boot_controller_t *controller, const uint8_t *data
                               uint16_t length)
 {
     boot_uart_update_begin_t request;
+    secure_boot_slot_t selected_slot = SECURE_BOOT_SLOT_NONE;
 
     if ((controller->state != BOOT_CONTROLLER_WAIT_UPDATE &&
          controller->state != BOOT_CONTROLLER_RECOVERY) ||
@@ -538,8 +644,19 @@ static void boot_begin_update(boot_controller_t *controller, const uint8_t *data
     }
 
     if (!boot_image_size_is_valid(request.image_size)) {
+        boot_log_size_reject(request.image_size);
         log_print("FW rejected invalid update size\r\n");
         controller->last_result = SECURE_BOOT_ERROR_STATE;
+        boot_log_update_error(controller->last_result);
+        boot_send_report(controller, BOOT_UART_REPORT_NACK,
+                         BOOT_UART_COMMAND_UPDATE_BEGIN,
+                         controller->last_result);
+        return;
+    }
+
+    controller->last_result = secure_boot_select_update_slot(&selected_slot);
+    if (controller->last_result != SECURE_BOOT_OK) {
+        log_print("FW failed to select update slot\r\n");
         boot_log_update_error(controller->last_result);
         boot_send_report(controller, BOOT_UART_REPORT_NACK,
                          BOOT_UART_COMMAND_UPDATE_BEGIN,
@@ -550,6 +667,7 @@ static void boot_begin_update(boot_controller_t *controller, const uint8_t *data
     boot_reset_transfer(controller);
     controller->expected_image_size = request.image_size;
     controller->image_version = request.image_version;
+    controller->target_slot = selected_slot;
     memcpy(controller->expected_hash, request.image_sha256,
            sizeof(controller->expected_hash));
     memcpy(controller->signature, request.signature, sizeof(controller->signature));
@@ -557,6 +675,9 @@ static void boot_begin_update(boot_controller_t *controller, const uint8_t *data
     controller->state = BOOT_CONTROLLER_RECEIVING;
     custom_timer_start(&controller->state_timer, BOOT_UPDATE_TIMEOUT_MS);
     controller->last_result = SECURE_BOOT_OK;
+    log_print("FW selected FOTA slot: ");
+    log_print(boot_slot_name(selected_slot));
+    log_print("\r\n");
     boot_send_report(controller, BOOT_UART_REPORT_ACK, BOOT_UART_COMMAND_UPDATE_BEGIN,
                      SECURE_BOOT_OK);
 }
@@ -566,8 +687,8 @@ static void boot_begin_update(boot_controller_t *controller, const uint8_t *data
  *
  * @details
  * Validates that the controller is receiving, parses the chunk payload, enforces
- * exact sequential offset, selects the Flash target from the first chunk when
- * needed, writes chunk bytes to Flash,
+ * exact sequential offset, validates the selected Flash target against the
+ * first chunk when needed, writes chunk bytes to Flash,
  * updates the streaming SHA-256 digest, advances the received byte counter, and
  * refreshes the update timeout.
  *
@@ -593,10 +714,22 @@ static void boot_receive_chunk(boot_controller_t *controller, const uint8_t *dat
         return;
     }
 
-    if (request.offset != controller->received_image_size ||
-        request.length == 0U || request.length > BOOT_UART_MAX_CHUNK_SIZE ||
+    if (request.offset != controller->received_image_size) {
+        boot_log_chunk_reject("offset", request.offset, request.length,
+                              controller->received_image_size,
+                              controller->expected_image_size);
+        controller->last_result = SECURE_BOOT_ERROR_FLASH;
+        boot_log_update_error(controller->last_result);
+        boot_send_report(controller, BOOT_UART_REPORT_NACK,
+                         BOOT_UART_COMMAND_UPDATE_CHUNK, controller->last_result);
+        return;
+    }
+    if (request.length == 0U || request.length > BOOT_UART_MAX_CHUNK_SIZE ||
         request.length > controller->expected_image_size -
                              controller->received_image_size) {
+        boot_log_chunk_reject("chunk_len", request.offset, request.length,
+                              controller->received_image_size,
+                              controller->expected_image_size);
         controller->last_result = SECURE_BOOT_ERROR_FLASH;
         boot_log_update_error(controller->last_result);
         boot_send_report(controller, BOOT_UART_REPORT_NACK,
@@ -604,7 +737,7 @@ static void boot_receive_chunk(boot_controller_t *controller, const uint8_t *dat
         return;
     }
 
-    if (controller->target_slot == SECURE_BOOT_SLOT_NONE &&
+    if (controller->flash_writer.slot == SECURE_BOOT_SLOT_NONE &&
         !boot_prepare_flash_target(controller, &request)) {
         boot_send_report(controller, BOOT_UART_REPORT_NACK,
                          BOOT_UART_COMMAND_UPDATE_CHUNK, controller->last_result);
@@ -665,7 +798,7 @@ static secure_boot_result_t boot_commit_verified_update(
     // check that the computed digest matches the expected hash from UPDATE_BEGIN
     if (!crypto_manager_constant_time_equal(digest, controller->expected_hash,
                                             SHA256_DIGEST_SIZE)) {
-        log_print("FW verify failed: streamed hash\r\n");
+        log_print("FW verify failed: streamed hash field=image_sha256\r\n");
         boot_log_update_error(SECURE_BOOT_ERROR_HASH);
         return SECURE_BOOT_ERROR_HASH;
     }
@@ -674,14 +807,14 @@ static secure_boot_result_t boot_commit_verified_update(
                                               controller->image_version,
                                               controller->expected_hash,
                                               controller->signature, &manifest)) {
-        log_print("FW verify failed: manifest signature\r\n");
+        log_print("FW verify failed: manifest signature field=signature\r\n");
         boot_log_update_error(SECURE_BOOT_ERROR_SIGNATURE);
         return SECURE_BOOT_ERROR_SIGNATURE;
     }
     //check that the manifest can be written to flash correctly
     if (!boot_flash_write_manifest(controller->target_slot, &manifest)) {
         crypto_manager_secure_zero(&manifest, sizeof(manifest));
-        log_print("FW verify failed: manifest flash\r\n");
+        log_print("FW verify failed: manifest flash field=manifest\r\n");
         boot_log_update_error(SECURE_BOOT_ERROR_FLASH);
         return SECURE_BOOT_ERROR_FLASH;
     }

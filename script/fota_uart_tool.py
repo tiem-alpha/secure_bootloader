@@ -26,7 +26,9 @@ PACK_START = 0xAC
 PACK_END = 0xBB
 COM_MAX_PAYLOAD_SIZE = 250
 
+CMD_STATUS = 0x01
 CMD_RESET = 0x04
+CMD_SLOT_INFO = 0x05
 CMD_UPDATE_BEGIN = 0x10
 CMD_UPDATE_CHUNK = 0x11
 CMD_UPDATE_END = 0x12
@@ -36,6 +38,7 @@ REPORT_ACK = 0x81
 REPORT_NACK = 0x82
 REPORT_BOOT = 0x83
 REPORT_JUMP = 0x84
+REPORT_SLOT_INFO = 0x85
 
 SECURE_BOOT_MANIFEST_MAGIC = 0x53424D46
 SECURE_BOOT_MANIFEST_VERSION = 1
@@ -236,6 +239,23 @@ def sign_firmware(firmware_path: str, key_path: str, version: int) -> dict:
 
 
 def parse_report(payload: bytes) -> dict:
+    if len(payload) == 28 and payload[0] == REPORT_SLOT_INFO:
+        return {
+            "valid": True,
+            "report": payload[0],
+            "command": payload[1],
+            "controller_state": payload[2],
+            "result": payload[3],
+            "app1_result": payload[4],
+            "app1_valid": payload[5],
+            "app2_result": payload[6],
+            "app2_valid": payload[7],
+            "app1_image_size": struct.unpack_from("<I", payload, 8)[0],
+            "app1_image_version": struct.unpack_from("<I", payload, 12)[0],
+            "app2_image_size": struct.unpack_from("<I", payload, 16)[0],
+            "app2_image_version": struct.unpack_from("<I", payload, 20)[0],
+            "minimum_version": struct.unpack_from("<I", payload, 24)[0],
+        }
     if len(payload) != 20:
         return {"raw": payload.hex(), "valid": False}
     return {
@@ -258,8 +278,24 @@ def report_name(value: int) -> str:
         REPORT_NACK: "NACK",
         REPORT_BOOT: "BOOT",
         REPORT_JUMP: "JUMP",
+        REPORT_SLOT_INFO: "SLOT_INFO",
     }
     return names.get(value, f"0x{value:02X}")
+
+
+def slot_summary(report: dict) -> str:
+    def one_slot(name: str, prefix: str) -> str:
+        valid = bool(report[f"{prefix}_valid"])
+        result = result_name(report[f"{prefix}_result"])
+        size = report[f"{prefix}_image_size"]
+        version = report[f"{prefix}_image_version"]
+        state = "valid" if valid else f"invalid:{result}"
+        return f"{name} {state} version={version} size={size}"
+
+    return (
+        f"{one_slot('APP1', 'app1')}; {one_slot('APP2', 'app2')}; "
+        f"minimum_version={report['minimum_version']}"
+    )
 
 
 class FotaClient:
@@ -311,12 +347,18 @@ class FotaClient:
             report = parse_report(payload)
             last = report
             if report.get("valid"):
-                self.log(
-                    f"RX {report_name(report['report'])} cmd=0x{report['command']:02X} "
-                    f"result={report['result']}({result_name(report['result'])}) "
-                    f"rx={report['received_size']}/{report['expected_size']} "
-                    f"update_state={report['update_state']}"
-                )
+                if report["report"] == REPORT_SLOT_INFO:
+                    self.log(
+                        f"RX SLOT_INFO result={report['result']}"
+                        f"({result_name(report['result'])}) {slot_summary(report)}"
+                    )
+                else:
+                    self.log(
+                        f"RX {report_name(report['report'])} cmd=0x{report['command']:02X} "
+                        f"result={report['result']}({result_name(report['result'])}) "
+                        f"rx={report['received_size']}/{report['expected_size']} "
+                        f"update_state={report['update_state']}"
+                    )
                 if command is None or report["command"] == command:
                     return report
             else:
@@ -343,6 +385,20 @@ class FotaClient:
             if report.get("report") == REPORT_BOOT:
                 return report
         raise TimeoutError("Boot report not received")
+
+    def request_slot_info(self) -> dict:
+        self.log("TX SLOT_INFO command")
+        self.send_payload(bytes([CMD_SLOT_INFO]))
+        report = self.wait_report(command=CMD_SLOT_INFO, timeout_s=8.0)
+        if report["report"] != REPORT_SLOT_INFO or report["result"] != 0:
+            raise RuntimeError(
+                f"SLOT_INFO failed: {result_name(report['result'])} ({report})"
+            )
+        return report
+
+    def reset_bootloader(self):
+        self.log("TX RESET command")
+        self.send_payload(bytes([CMD_RESET]))
 
     def transfer(
         self,
@@ -442,6 +498,8 @@ class FotaToolGui:
         actions = ttk.Frame(main)
         actions.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(10, 8))
         ttk.Button(actions, text="Start update", command=self.start_update).pack(side="left")
+        ttk.Button(actions, text="Slot/FW info", command=self.request_slot_info).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Reset boot", command=self.reset_bootloader).pack(side="left", padx=(8, 0))
 
         self.log_text = tk.Text(main, height=22, wrap="word")
         self.log_text.grid(row=6, column=0, columnspan=3, sticky="nsew")
@@ -559,6 +617,36 @@ class FotaToolGui:
 
         self.run_worker(task)
 
+    def request_slot_info(self):
+        def task():
+            client = None
+            try:
+                client = self.make_client()
+                report = client.request_slot_info()
+                self.log(slot_summary(report))
+            except Exception as exc:
+                self.log(f"ERROR: {exc}")
+            finally:
+                if client:
+                    client.close()
+
+        self.run_worker(task)
+
+    def reset_bootloader(self):
+        def task():
+            client = None
+            try:
+                client = self.make_client()
+                client.reset_bootloader()
+                self.log("Reset command sent")
+            except Exception as exc:
+                self.log(f"ERROR: {exc}")
+            finally:
+                if client:
+                    client.close()
+
+        self.run_worker(task)
+
 
 def cli_sign(args) -> int:
     signed = sign_firmware(args.firmware, args.key, int(args.version, 0))
@@ -576,6 +664,36 @@ def cli_gen_key(args) -> int:
     return 0
 
 
+def cli_slot_info(args) -> int:
+    client = None
+    try:
+        client = FotaClient(args.port, int(args.baud, 0), print)
+        if args.reset_mode != "none":
+            client.pulse_reset(args.reset_mode)
+            client.wait_boot(timeout_s=args.boot_timeout)
+        report = client.request_slot_info()
+        print(json.dumps(report, indent=2))
+        print(slot_summary(report))
+        return 0
+    finally:
+        if client:
+            client.close()
+
+
+def cli_reset(args) -> int:
+    client = None
+    try:
+        client = FotaClient(args.port, int(args.baud, 0), print)
+        client.reset_bootloader()
+        if args.reset_mode != "none":
+            client.pulse_reset(args.reset_mode)
+        print("Reset command sent")
+        return 0
+    finally:
+        if client:
+            client.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description="STM32 secure boot UART FOTA tool")
     sub = parser.add_subparsers(dest="cmd")
@@ -591,6 +709,19 @@ def main():
     sign.add_argument("--version", default="1")
     sign.add_argument("--out")
     sign.set_defaults(func=cli_sign)
+
+    slot_info = sub.add_parser("slot-info", help="request APP1/APP2 firmware metadata from bootloader")
+    slot_info.add_argument("--port", required=True)
+    slot_info.add_argument("--baud", default="115200")
+    slot_info.add_argument("--reset-mode", choices=["none", "dtr", "rts", "dtr_rts"], default="none")
+    slot_info.add_argument("--boot-timeout", type=float, default=8.0)
+    slot_info.set_defaults(func=cli_slot_info)
+
+    reset = sub.add_parser("reset", help="send bootloader RESET command over UART")
+    reset.add_argument("--port", required=True)
+    reset.add_argument("--baud", default="115200")
+    reset.add_argument("--reset-mode", choices=["none", "dtr", "rts", "dtr_rts"], default="none")
+    reset.set_defaults(func=cli_reset)
 
     args = parser.parse_args()
     if hasattr(args, "func"):

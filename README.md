@@ -342,6 +342,7 @@ CRC is CRC-16/MCRF4XX over `len_hi`, `len_lo`, and `payload`.
 | `STATUS`       | `0x01` | `[cmd]`                                                               |
 | `BOOT_NOW`     | `0x03` | `[cmd]`                                                               |
 | `RESET`        | `0x04` | `[cmd]`                                                               |
+| `SLOT_INFO`    | `0x05` | `[cmd]`                                                               |
 | `UPDATE_BEGIN` | `0x10` | `[cmd, image_size u32, version u32, sha256 32B, signature 64B]`        |
 | `UPDATE_CHUNK` | `0x11` | `[cmd, offset u32, data...]`                                          |
 | `UPDATE_END`   | `0x12` | `[cmd]`                                                               |
@@ -360,6 +361,7 @@ vector table before erasing Flash.
 | `NACK`   | `0x82` | Command failed                                |
 | `BOOT`   | `0x83` | Bootloader has entered boot mode              |
 | `JUMP`   | `0x84` | Bootloader is about to jump to an application |
+| `SLOT_INFO` | `0x85` | APP1/APP2 firmware metadata                |
 
 Report payload is 20 bytes:
 
@@ -373,6 +375,24 @@ Report payload is 20 bytes:
 [8..11] received_image_size  little-endian
 [12..15] expected_image_size little-endian
 [16..19] image_version       little-endian
+```
+
+`SLOT_INFO` report payload is 28 bytes:
+
+```text
+[0] report = 0x85
+[1] command = 0x05
+[2] boot_controller_state
+[3] secure_boot_result
+[4] APP1 secure_boot_result
+[5] APP1 valid
+[6] APP2 secure_boot_result
+[7] APP2 valid
+[8..11] APP1 image_size      little-endian
+[12..15] APP1 image_version  little-endian
+[16..19] APP2 image_size     little-endian
+[20..23] APP2 image_version  little-endian
+[24..27] minimum_version     little-endian
 ```
 
 ## Module Architecture
@@ -632,6 +652,15 @@ In the GUI:
 7. The tool sends `RESET`, waits for a `BOOT` status report, then transfers the
    signed firmware.
 8. After `UPDATE_END` succeeds, the bootloader sends `JUMP` and starts the app.
+
+The GUI also provides `Slot/FW info` to request APP1/APP2 validity, image size,
+and firmware version, plus `Reset boot` to send the bootloader reset command.
+The same operations are available from CLI:
+
+```powershell
+python script\fota_uart_tool.py slot-info --port COM3 --baud 115200
+python script\fota_uart_tool.py reset --port COM3 --baud 115200
+```
 
 If the application does not handle the `RESET` command and DTR/RTS is not wired
 to the reset/boot pins, select reset mode `none` and reset the MCU manually

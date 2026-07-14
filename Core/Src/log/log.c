@@ -1,6 +1,6 @@
 #include "log.h"
 
-#ifdef BOOT_LOG_ENABLE
+#ifdef LOG_ENABLE
 
 #include "SEGGER_RTT.h"
 

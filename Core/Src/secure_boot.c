@@ -17,6 +17,22 @@ static secure_boot_result_t secure_boot_verify_acceptable_slot(
     secure_boot_slot_t slot, uint32_t minimum_version,
     const secure_boot_manifest_t **manifest_out);
 
+#ifdef LOG_ENABLE
+static const char *secure_boot_slot_name(secure_boot_slot_t slot)
+{
+    switch (slot) {
+    case SECURE_BOOT_SLOT_APP1:
+        return "APP1";
+    case SECURE_BOOT_SLOT_APP2:
+        return "APP2";
+    case SECURE_BOOT_SLOT_NONE:
+        return "NONE";
+    default:
+        return "INVALID";
+    }
+}
+#endif
+
 /**
  * @brief Compute CRC-32 for a persistent status record fragment.
  *
@@ -569,7 +585,10 @@ secure_boot_result_t secure_boot_select_update_slot(
  */
 static void secure_boot_jump_to_image(secure_boot_slot_t slot)
 {
-    
+    log_print("SB jump slot: ");
+    log_print(secure_boot_slot_name(slot));
+    log_print("\r\n");
+
     boot_platform_jump_to_image(secure_boot_slot_base(slot));
 }
 

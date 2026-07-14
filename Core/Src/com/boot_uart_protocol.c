@@ -90,3 +90,35 @@ bool boot_uart_build_report(uint8_t *payload, uint16_t capacity, uint8_t report,
     *length_out = BOOT_UART_REPORT_SIZE;
     return true;
 }
+
+/** @copydoc boot_uart_build_slot_info_report */
+bool boot_uart_build_slot_info_report(
+    uint8_t *payload, uint16_t capacity, uint8_t controller_state,
+    secure_boot_result_t result, secure_boot_result_t app1_result,
+    uint8_t app1_valid, uint32_t app1_image_size,
+    uint32_t app1_image_version, secure_boot_result_t app2_result,
+    uint8_t app2_valid, uint32_t app2_image_size,
+    uint32_t app2_image_version, uint32_t minimum_version,
+    uint16_t *length_out)
+{
+    if (payload == NULL || length_out == NULL ||
+        capacity < BOOT_UART_SLOT_INFO_REPORT_SIZE) {
+        return false;
+    }
+
+    payload[0] = BOOT_UART_REPORT_SLOT_INFO;
+    payload[1] = BOOT_UART_COMMAND_SLOT_INFO;
+    payload[2] = controller_state;
+    payload[3] = (uint8_t)result;
+    payload[4] = (uint8_t)app1_result;
+    payload[5] = app1_valid;
+    payload[6] = (uint8_t)app2_result;
+    payload[7] = app2_valid;
+    boot_uart_write_u32_le(&payload[8], app1_image_size);
+    boot_uart_write_u32_le(&payload[12], app1_image_version);
+    boot_uart_write_u32_le(&payload[16], app2_image_size);
+    boot_uart_write_u32_le(&payload[20], app2_image_version);
+    boot_uart_write_u32_le(&payload[24], minimum_version);
+    *length_out = BOOT_UART_SLOT_INFO_REPORT_SIZE;
+    return true;
+}

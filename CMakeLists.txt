@@ -72,7 +72,7 @@ if(BOOT_ENABLE_RTT_LOG)
         Core/Src/log/SEGGER_RTT.c
     )
     target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
-        BOOT_LOG_ENABLE
+        LOG_ENABLE
     )
 endif()
 

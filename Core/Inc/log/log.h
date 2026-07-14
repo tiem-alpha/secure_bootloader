@@ -9,7 +9,7 @@ extern "C"
 {
 #endif
 
-#ifdef BOOT_LOG_ENABLE
+#ifdef LOG_ENABLE
 
 /**
  * @brief Initialize the logging backend.

@@ -71,6 +71,8 @@ typedef enum {
     SECURE_BOOT_UPDATE_IDLE = 0,
     /** A slot erase/write operation has started but is not committed yet. */
     SECURE_BOOT_UPDATE_RECEIVING = 1,
+    /** Full image verification passed; manifest/trial commit is in progress. */
+    SECURE_BOOT_UPDATE_COMMITTING = 2,
 } secure_boot_update_state_t;
 
 /**
@@ -205,7 +207,9 @@ secure_boot_result_t secure_boot_get_status(secure_boot_status_t *status);
  * @brief Recover from an interrupted update marker after reset.
  *
  * If the persistent status indicates an update was in progress, the marker is
- * cleared. The partially written slot remains unbootable because its manifest
+ * cleared. If power was lost after the image passed verification and the
+ * manifest write completed, the verified slot is promoted back to trial state.
+ * Otherwise the partially written slot remains unbootable because its manifest
  * is missing or invalid.
  *
  * @return SECURE_BOOT_OK or SECURE_BOOT_ERROR_FLASH.
@@ -239,6 +243,20 @@ secure_boot_result_t secure_boot_select_update_slot(
  * @return SECURE_BOOT_OK on successful status persistence.
  */
 secure_boot_result_t secure_boot_begin_update(secure_boot_slot_t slot);
+
+/**
+ * @brief Mark a verified update as entering the manifest/trial commit window.
+ *
+ * The marker is written after the full image hash and signature have been
+ * checked, but before the manifest is programmed. On the next boot, recovery
+ * can promote the slot to trial if the manifest write had completed before
+ * power loss.
+ *
+ * @param[in] slot Internal Flash target being committed.
+ *
+ * @return SECURE_BOOT_OK on successful status persistence.
+ */
+secure_boot_result_t secure_boot_mark_update_committing(secure_boot_slot_t slot);
 
 /**
  * @brief Clear the persistent update-in-progress marker.

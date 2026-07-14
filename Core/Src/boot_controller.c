@@ -806,12 +806,19 @@ static secure_boot_result_t boot_commit_verified_update(
     }
     //check that the manifest can be built and signed correctly
     if (!crypto_manager_build_signed_manifest(controller->expected_image_size,
-                                              controller->image_version,
-                                              controller->expected_hash,
-                                              controller->signature, &manifest)) {
+                                               controller->image_version,
+                                               controller->expected_hash,
+                                               controller->signature, &manifest)) {
         log_print("FW verify failed: manifest signature field=signature\r\n");
         boot_log_update_error(SECURE_BOOT_ERROR_SIGNATURE);
         return SECURE_BOOT_ERROR_SIGNATURE;
+    }
+    result = secure_boot_mark_update_committing(controller->target_slot);
+    if (result != SECURE_BOOT_OK) {
+        crypto_manager_secure_zero(&manifest, sizeof(manifest));
+        log_print("FW verify failed: status field=update_state\r\n");
+        boot_log_update_error(result);
+        return result;
     }
     //check that the manifest can be written to flash correctly
     if (!boot_flash_write_manifest(controller->target_slot, &manifest)) {
@@ -869,9 +876,14 @@ static void boot_finish_update(boot_controller_t *controller, const uint8_t *dat
     crypto_manager_secure_zero(digest, sizeof(digest));
 
     if (controller->last_result != SECURE_BOOT_OK) {
+        secure_boot_status_t status;
+
         log_print("FW update verification failed\r\n");
         controller->state = BOOT_CONTROLLER_RECOVERY;
-        (void)secure_boot_abort_update();
+        if (secure_boot_get_status(&status) != SECURE_BOOT_OK ||
+            status.update_state != SECURE_BOOT_UPDATE_COMMITTING) {
+            (void)secure_boot_abort_update();
+        }
         boot_send_report(controller, BOOT_UART_REPORT_NACK,
                          BOOT_UART_COMMAND_UPDATE_END, controller->last_result);
         return;

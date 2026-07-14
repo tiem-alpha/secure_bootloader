@@ -67,8 +67,9 @@ Core requirements:
    records, generation counters, and CRC so boot state can survive reset or
    power loss.
 7. During FOTA, the bootloader must mark `update_state=RECEIVING` before slot
-   erase/write starts. If power is lost before the update is committed, the next
-   boot clears the update marker and refuses to boot the partially written slot.
+   erase/write starts and `update_state=COMMITTING` before the manifest/trial
+   commit window. If power is lost before the manifest is valid, the next boot
+   clears the update marker and refuses to boot the partially written slot.
 8. A slot becomes bootable only after the full image is received, the streamed
    SHA-256 matches the manifest hash, the manifest signature verifies, and the
    manifest is written successfully.
@@ -78,9 +79,12 @@ Core requirements:
 10. If a trial image is not confirmed within the allowed trial boot count, the
     bootloader must roll back to the confirmed slot or another valid fallback
     image.
-11. The bootloader must enforce anti-rollback with a monotonic
+11. While a verified trial image is pending or already consumed but not
+    confirmed, the bootloader must reject a new FOTA target selection so the
+    last confirmed image is not erased.
+12. The bootloader must enforce anti-rollback with a monotonic
     `image_version`. Images older than `minimum_version` must be rejected.
-12. The bootloader region and provisioned public key must be protected against
+13. The bootloader region and provisioned public key must be protected against
     field modification, for example with STM32 option-byte write protection and
     an appropriate readout/debug-port policy. This prevents an attacker from
     replacing the verifier, replacing the public key, or bypassing signature
@@ -268,7 +272,7 @@ backup page. The bootloader selects the valid record with the highest
 | `trial_boot_count` | Trial boot counter                                  |
 | `minimum_version`  | Minimum accepted version for anti-rollback          |
 | `update_slot`      | Slot currently being updated                        |
-| `update_state`     | `IDLE` or `RECEIVING`, used for power-loss recovery |
+| `update_state`     | `IDLE`, `RECEIVING`, or `COMMITTING` for recovery   |
 | `crc32`            | Integrity check for the status record               |
 
 Power-loss behavior:
@@ -278,8 +282,49 @@ Power-loss behavior:
 - If power fails while writing application data, `update_state=RECEIVING` is
   cleared on the next boot. The partially written slot is not bootable because
   its manifest is missing or invalid.
+- If power fails after image verification while `update_state=COMMITTING`, the
+  next boot verifies the target slot. A valid manifest is promoted back to trial
+  state; an invalid or missing manifest is rolled back by clearing the marker.
 - A slot becomes bootable only after image hash verification, manifest signature
   verification, and manifest Flash write all succeed.
+- New FOTA target selection is rejected while a valid trial image is still
+  unconfirmed, protecting the confirmed fallback slot from erase.
+
+Power-loss proof argument:
+
+The recovery design relies on these invariants:
+
+1. The bootloader jumps only after `secure_boot_verify_slot()` accepts the slot:
+   manifest magic/version/size must match, vector table must point into the
+   signed image, the image SHA-256 must equal the manifest hash, the manifest
+   signature must verify with the provisioned public key, and `image_version`
+   must be at least `minimum_version`.
+2. Flash status is stored in two pages. A status record is usable only when its
+   magic, format version, record size, generation, and CRC are valid; otherwise
+   the other valid page or default in-RAM status is used.
+3. The FOTA target is chosen from the inactive slot. If a valid trial image is
+   still unconfirmed, target selection returns `SECURE_BOOT_ERROR_STATE` instead
+   of erasing the confirmed fallback slot.
+4. A slot is not promoted to trial until the complete image hash and manifest
+   signature have been verified. During the manifest/trial commit window,
+   `update_state=COMMITTING` records which slot must be re-evaluated after
+   reset.
+
+| Power-loss point | Recovery result | Why it remains safe |
+| ---------------- | --------------- | ------------------- |
+| Before `update_state=RECEIVING` is written | Previous status remains selected | No target slot has been erased by the update path. |
+| After `RECEIVING`, before or during slot erase | Recovery clears the marker | The target slot may be blank or partial, but invariant 1 rejects it. |
+| During image chunk writes | Recovery clears the marker | The image hash cannot match a complete signed manifest unless all bytes were written. |
+| After the final chunk, before `COMMITTING` | Recovery clears the marker | No new manifest/trial commit was recorded; boot falls back to confirmed or another valid slot. |
+| After `COMMITTING`, before manifest write completes | Recovery verifies the target slot, then clears or promotes | Partial/missing manifest fails invariant 1; a complete valid manifest is promoted to trial. |
+| After manifest write, before trial status commit | Recovery verifies the target slot and promotes it to trial | The manifest proves the image is complete and signed, so replaying the trial commit is safe. |
+| After trial status commit, before application confirm | Trial boot count policy applies | The image may boot once; if not confirmed, the next boot clears trial and selects confirmed/fallback. |
+| During `secure_boot_confirm_running_image()` status write | The older status page or newer valid page wins | If confirmation did not commit, the image remains trial; if it committed, `minimum_version` and `confirmed_slot` are valid. |
+
+Therefore a reset at any single point in the FOTA sequence leaves the device in
+one of three safe states: still running the previous confirmed image, waiting in
+bootloader recovery with no bootable image erased, or booting exactly one
+verified trial image that must confirm itself before it can become permanent.
 
 ### Firmware RAM map
 
@@ -492,14 +537,17 @@ flowchart TD
     CHUNK --> WRITE[Write Flash + update SHA]
     WRITE --> END[UPDATE_END]
     END --> VERIFY[Verify SHA + ECDSA]
-    VERIFY --> MANIFEST[Write manifest]
+    VERIFY --> COMMIT[Set update_state=COMMITTING]
+    COMMIT --> MANIFEST[Write manifest]
     MANIFEST --> TRIAL[Set active_slot + trial_slot]
     TRIAL --> JUMP[Jump to app]
 ```
 
 If power is lost while `update_state=RECEIVING`, the next boot clears the
 marker and refuses to boot the partially written slot because its manifest is
-not valid.
+not valid. If power is lost while `update_state=COMMITTING`, the next boot
+verifies the target slot: a complete manifest is promoted to trial, and an
+incomplete manifest is rejected.
 
 ## Sequence Diagram
 
@@ -538,6 +586,8 @@ sequenceDiagram
 
     PC->>BL: UPDATE_END()
     BL->>SB: verify SHA-256 + ECDSA P-256
+    BL->>SB: secure_boot_mark_update_committing(internal target)
+    SB->>FL: write status update_state=COMMITTING
     BL->>FL: write manifest
     BL->>SB: secure_boot_request_trial(internal target)
     SB->>FL: write status active_slot + trial_slot
@@ -603,6 +653,27 @@ sequenceDiagram
     SB->>FL: clear update_state
     BL->>PC: BOOT report
     BL->>SB: select confirmed/fallback slot only
+```
+
+### Power loss during commit
+
+```mermaid
+sequenceDiagram
+    participant BL as Bootloader
+    participant FL as Flash
+    participant SB as Secure Boot
+
+    BL->>SB: secure_boot_mark_update_committing
+    SB->>FL: update_state=COMMITTING
+    BL->>FL: write manifest
+    Note over BL,FL: Power loss before trial status
+    BL->>SB: secure_boot_recover_interrupted_update
+    SB->>SB: verify target slot manifest/hash/signature
+    alt target slot valid
+        SB->>FL: set trial_slot + active_slot, clear update_state
+    else target slot invalid
+        SB->>FL: clear update_state
+    end
 ```
 
 ## State Machine

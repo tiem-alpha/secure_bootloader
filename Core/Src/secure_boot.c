@@ -429,9 +429,22 @@ secure_boot_result_t secure_boot_recover_interrupted_update(void)
 {
     secure_boot_status_t status;
     const secure_boot_status_t *source = secure_boot_load_status(&status);
+    const secure_boot_manifest_t *manifest = NULL;
+    secure_boot_slot_t update_slot = (secure_boot_slot_t)status.update_slot;
 
     if (status.update_state == SECURE_BOOT_UPDATE_IDLE) {
         return SECURE_BOOT_OK;
+    }
+
+    if (status.update_state == SECURE_BOOT_UPDATE_COMMITTING &&
+        secure_boot_slot_is_valid(update_slot) &&
+        secure_boot_verify_acceptable_slot(update_slot, status.minimum_version,
+                                           &manifest) == SECURE_BOOT_OK) {
+        status.trial_slot = (uint32_t)update_slot;
+        status.trial_boot_count = 0U;
+        status.active_slot = (uint32_t)update_slot;
+        secure_boot_clear_update_marker(&status);
+        return secure_boot_commit_status(&status, source);
     }
 
     secure_boot_clear_update_marker(&status);
@@ -454,6 +467,24 @@ secure_boot_result_t secure_boot_begin_update(secure_boot_slot_t slot)
 
     status.update_slot = (uint32_t)slot;
     status.update_state = SECURE_BOOT_UPDATE_RECEIVING;
+    return secure_boot_commit_status(&status, source);
+}
+
+/** @copydoc secure_boot_mark_update_committing */
+secure_boot_result_t secure_boot_mark_update_committing(secure_boot_slot_t slot)
+{
+    secure_boot_status_t status;
+    const secure_boot_status_t *source = secure_boot_load_status(&status);
+
+    if (!secure_boot_slot_is_valid(slot)) {
+        return SECURE_BOOT_ERROR_ARGUMENT;
+    }
+    if (status.update_state != SECURE_BOOT_UPDATE_RECEIVING ||
+        status.update_slot != (uint32_t)slot) {
+        return SECURE_BOOT_ERROR_STATE;
+    }
+
+    status.update_state = SECURE_BOOT_UPDATE_COMMITTING;
     return secure_boot_commit_status(&status, source);
 }
 
@@ -649,6 +680,7 @@ secure_boot_result_t secure_boot_select_update_slot(
     secure_boot_status_t status;
     secure_boot_slot_t active_slot;
     secure_boot_slot_t candidate_slot;
+    const secure_boot_manifest_t *manifest = NULL;
 
     if (selected_slot == NULL) {
         return SECURE_BOOT_ERROR_ARGUMENT;
@@ -657,6 +689,12 @@ secure_boot_result_t secure_boot_select_update_slot(
     *selected_slot = SECURE_BOOT_SLOT_NONE;
     (void)secure_boot_load_status(&status);
     if (status.update_state != SECURE_BOOT_UPDATE_IDLE) {
+        return SECURE_BOOT_ERROR_STATE;
+    }
+    if (secure_boot_slot_is_valid((secure_boot_slot_t)status.trial_slot) &&
+        secure_boot_verify_acceptable_slot((secure_boot_slot_t)status.trial_slot,
+                                           status.minimum_version,
+                                           &manifest) == SECURE_BOOT_OK) {
         return SECURE_BOOT_ERROR_STATE;
     }
 

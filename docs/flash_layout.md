@@ -20,10 +20,17 @@ starting at the application vector table.
 
 The first two data Flash pages contain alternating status records. `active_slot`
 tracks the slot protected from the next FOTA erase; when no active image can be
-identified, APP1 is used as the first update target. A candidate image is booted
-once after `secure_boot_request_trial()`. The candidate must call
-`secure_boot_confirm_running_image()` after its self-test; otherwise the next
-reset clears the trial and boots the last confirmed valid image.
+identified, APP1 is used as the first update target. `update_state=RECEIVING` is
+written before erasing/writing a target slot, and `update_state=COMMITTING` is
+written after image verification but before manifest programming. If reset or
+power loss occurs during `COMMITTING`, recovery verifies the target manifest and
+promotes the slot back to trial only when the image, hash, and signature are all
+valid. A candidate image is booted once after `secure_boot_request_trial()`. The
+candidate must call `secure_boot_confirm_running_image()` after its self-test;
+otherwise the next reset clears the trial and boots the last confirmed valid
+image. New FOTA target selection is rejected while a valid trial slot is still
+unconfirmed so the confirmed fallback slot is not erased. See the power-loss
+proof argument in `README.md` for the reset-point case analysis.
 
 Replace the all-zero public key in `Core/Src/secure_boot_public_key.c` with the
 immutable production ECDSA P-256 public key before shipping. The default fails

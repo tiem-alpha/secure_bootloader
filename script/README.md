@@ -49,10 +49,10 @@ Generate key/cert/public-key C array:
 python script\fota_uart_tool.py gen-key --out-dir script\keys
 ```
 
-Sign both APP1/APP2 firmware binaries from a folder and export metadata:
+Sign the APP1-linked runtime firmware binary from a folder and export metadata:
 
 ```powershell
-python script\fota_uart_tool.py sign-folder --firmware-dir path\to\folder_with_app1_app2_bins --key script\keys\secure_boot_p256_private_key.pem --version 1 --out firmware_bundle.fota.json
+python script\fota_uart_tool.py sign-folder --firmware-dir path\to\folder_with_app1_bin --key script\keys\secure_boot_p256_private_key.pem --version 1 --out firmware_bundle.fota.json
 ```
 
 The UART tool uses the bootloader protocol:
@@ -61,36 +61,36 @@ The UART tool uses the bootloader protocol:
   signature `r || s`.
 - `UPDATE_CHUNK`: offset and data, default 200 bytes per chunk. The first
   chunk must contain at least the first 8 firmware bytes.
-- `UPDATE_END`: requests bootloader verification and trial boot setup.
+- `UPDATE_END`: requests bootloader verification, APP2 staging manifest write,
+  and APP2-to-APP1 publish.
 - `RESET`: request a fresh bootloader session before update.
-- `SLOT_INFO`: query APP1/APP2 metadata and the bootloader-selected target slot
-  so the host can choose the matching binary.
+- `SLOT_INFO`: query APP1/APP2 metadata and confirm the bootloader-selected
+  staging slot.
 
 Click `Start update` to send `RESET`, wait for the periodic `BOOT` status
 report, query `SLOT_INFO`, and transfer the signed firmware linked for the
-target slot. The PC tool does not send the slot; the bootloader selects the
-inactive slot from persistent boot status and validates that the first chunk
-vector table was linked for that selected slot.
+APP1 runtime slot. The PC tool does not send the slot; the bootloader selects
+APP2 as the fixed staging slot and validates that the first chunk vector table
+was linked for APP1.
 If the application does not handle `RESET` and USB-UART DTR/RTS is not wired to
 the target reset/boot circuitry, reset the MCU manually after clicking
 `Start update`.
 
 Update communication flow:
 
-1. Tool signs both APP1-linked and APP2-linked `.bin` files from the selected
-   folder.
+1. Tool signs one APP1-linked `.bin` file from the selected folder.
 2. Tool sends `RESET`, or user manually resets the MCU when reset wiring is not
    available.
 3. Firmware enters bootloader mode and sends `BOOT`.
 4. Tool waits for `BOOT`, then sends `SLOT_INFO`.
-5. Firmware returns APP1/APP2 metadata plus `target_update_slot`.
-6. Tool chooses the signed binary matching `target_update_slot`.
+5. Firmware returns APP1/APP2 metadata plus `target_update_slot=APP2`.
+6. Tool chooses the signed APP1 runtime binary for APP2 staging.
 7. Tool sends `UPDATE_BEGIN(size, version, sha256, signature)`.
 8. Firmware selects the update slot internally again and replies
    `ACK UPDATE_BEGIN`.
 9. Tool streams `UPDATE_CHUNK` frames.
-10. Firmware validates the first chunk vector table against its selected slot,
+10. Firmware validates the first chunk vector table against APP1 runtime,
     writes accepted chunks to Flash, and ACKs each chunk.
 11. Tool sends `UPDATE_END`.
-12. Firmware verifies hash/signature, writes the manifest, marks the image as
-    trial, replies `ACK UPDATE_END`, sends `JUMP`, and boots the trial image.
+12. Firmware verifies hash/signature, writes the APP2 manifest, copies APP2 to
+    APP1, verifies APP1, replies `ACK UPDATE_END`, sends `JUMP`, and boots APP1.

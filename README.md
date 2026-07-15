@@ -46,8 +46,8 @@ Main dependencies:
 ### Secure boot System requirements
 
 The secure bootloader is the MCU root of trust. It must authenticate every
-application image before execution, preserve a known-good image during updates,
-and reject rollback to older firmware.
+application image before execution, stage updates away from APP1, recover after
+power loss during publish, and reject rollback to older firmware.
 
 Core requirements:
 
@@ -61,35 +61,29 @@ Core requirements:
 4. The bootloader must never jump to an unsigned image, an image with a bad
    hash, an image with an invalid signature, an unsupported manifest format, or
    an invalid vector table.
-5. The Flash layout must provide two application slots, App1 and App2, so a new
-   firmware image can be installed without destroying the last bootable image.
+5. The Flash layout must provide APP1 as the fixed runtime slot and APP2 as the
+   fixed staging slot. Firmware is received into APP2, then copied into APP1
+   only after verification.
 6. The bootloader must maintain persistent boot status with redundant Flash
    records, generation counters, and CRC so boot state can survive reset or
    power loss.
-7. During FOTA, the bootloader must mark `update_state=RECEIVING` before slot
-   erase/write starts and `update_state=COMMITTING` before the manifest/trial
-   commit window. If power is lost before the manifest is valid, the next boot
-   clears the update marker and refuses to boot the partially written slot.
-8. A slot becomes bootable only after the full image is received, the streamed
-   SHA-256 matches the manifest hash, the manifest signature verifies, and the
-   manifest is written successfully.
-9. A newly installed image must enter trial state first. It becomes permanent
-   only after the running application confirms itself with
-   `secure_boot_confirm_running_image(slot)`.
-10. If a trial image is not confirmed within the allowed trial boot count, the
-    bootloader must roll back to the confirmed slot or another valid fallback
-    image.
-11. While a verified trial image is pending or already consumed but not
-    confirmed, the bootloader must reject a new FOTA target selection so the
-    last confirmed image is not erased.
-12. The bootloader must enforce anti-rollback with a monotonic
+7. During FOTA, the bootloader must mark `update_state=RECEIVING` before APP2
+   erase/write starts and `update_state=COMMITTING` before APP2 is published
+   into APP1. If power is lost before the APP2 manifest is valid, the next boot
+   clears the update marker and keeps using APP1.
+8. APP1 becomes bootable only after the full image is received into APP2, the
+   streamed SHA-256 matches the manifest hash, the manifest signature verifies,
+   the APP2 manifest is written, APP2 is copied into APP1, and APP1 verifies.
+9. If power is lost while APP1 is being erased or copied, the next boot repeats
+   the APP2-to-APP1 copy while APP2 remains intact.
+10. The bootloader must enforce anti-rollback with a monotonic
     `image_version`. Images older than `minimum_version` must be rejected.
-13. The bootloader region and provisioned public key must be protected against
+11. The bootloader region and provisioned public key must be protected against
     field modification, for example with STM32 option-byte write protection and
     an appropriate readout/debug-port policy. This prevents an attacker from
     replacing the verifier, replacing the public key, or bypassing signature
     checks.
-13. UART FOTA packets must be framed and integrity-checked by the transport
+12. UART FOTA packets must be framed and integrity-checked by the transport
     protocol. The current implementation authenticates the installed firmware
     before boot but does not encrypt UART payloads; production deployments that
     require firmware confidentiality should add encrypted transport, such as an
@@ -98,8 +92,8 @@ Core requirements:
 Manifest/header requirements:
 
 - The firmware image and the secure boot manifest are separate objects in Flash.
-  The application is linked at the start of the selected slot; the manifest is
-  stored in the final 256 bytes of that slot.
+  The application is linked at APP1. During FOTA the same APP1-linked bytes are
+  staged in APP2, with the manifest stored in the final 256 bytes of APP2.
 - The manifest contains `magic`, `format_version`, `signed_size`, `image_size`,
   `image_version`, `image_flags`, `image_sha256`, `signature`, and reserved
   padding.
@@ -121,18 +115,14 @@ Manifest/header requirements:
 
 Update target ownership:
 
-- The PC FOTA tool does not send a Flash slot. It signs both APP1/APP2 binaries
-  from a firmware folder, queries `SLOT_INFO` before update, and transfers the
-  binary linked for the slot selected by bootloader policy.
-- The bootloader selects the inactive Flash slot from persistent boot status:
-  if no active image can be identified it selects APP1; otherwise it selects
-  the opposite slot from `active_slot`.
-- The first `UPDATE_CHUNK` must still contain a vector table linked for the
-  selected target slot. A firmware image linked for APP1 is rejected when the
-  selected target is APP2, and vice versa.
-- After a received image is verified and accepted as a trial image,
-  `active_slot` is updated to that slot so the next FOTA writes the opposite
-  slot.
+- The PC FOTA tool does not send a Flash slot. It signs an APP1-linked binary,
+  queries `SLOT_INFO`, and expects the bootloader target to be APP2 staging.
+- The bootloader always selects APP2 as the update target and always jumps only
+  to APP1 after verification.
+- The first `UPDATE_CHUNK` must contain a vector table linked for APP1 even
+  though the bytes are being written to APP2.
+- After a received image is verified, APP2 is copied into APP1 and `active_slot`
+  / `confirmed_slot` are recorded as APP1.
 
 ## Firmware System Architecture
 
@@ -153,20 +143,20 @@ The bootloader firmware is responsible for:
 
 - Reporting bootloader entry over UART.
 - Receiving new firmware over UART.
-- Selecting the inactive internal Flash slot from persistent boot status.
-- Validating that the incoming firmware vector table matches the selected slot.
-- Writing firmware to that internal region.
+- Selecting APP2 as the fixed internal staging slot.
+- Validating that the incoming firmware vector table is linked for APP1.
+- Writing firmware to APP2 staging.
 - Verifying the firmware SHA-256 hash.
 - Verifying the ECDSA P-256 manifest signature.
 - Writing the manifest only after successful verification.
-- Selecting a valid image to boot.
-- Rolling back if a trial image is not confirmed.
+- Publishing APP2 into APP1 with reset-safe replay.
+- Booting only APP1.
 
 The application firmware is responsible for:
 
-- Linking at the correct slot base address.
-- Calling `secure_boot_confirm_running_image(slot)` after a successful trial
-  boot, or using the confirm command in controlled debug/test flows.
+- Linking at APP1 base address.
+- Optionally calling `secure_boot_confirm_running_image(APP1)` after self-test
+  to refresh persistent status.
 
 ## Flash Partition
 
@@ -268,8 +258,8 @@ backup page. The bootloader selects the valid record with the highest
 | `generation`       | Monotonic status generation counter                 |
 | `active_slot`      | Slot treated as active for the next FOTA decision   |
 | `confirmed_slot`   | Last application confirmed as healthy               |
-| `trial_slot`       | Candidate application allowed to boot once          |
-| `trial_boot_count` | Trial boot counter                                  |
+| `trial_slot`       | Legacy field, kept cleared in the APP1 runtime flow |
+| `trial_boot_count` | Legacy field, kept cleared in the APP1 runtime flow |
 | `minimum_version`  | Minimum accepted version for anti-rollback          |
 | `update_slot`      | Slot currently being updated                        |
 | `update_state`     | `IDLE`, `RECEIVING`, or `COMMITTING` for recovery   |
@@ -279,16 +269,15 @@ Power-loss behavior:
 
 - If power fails while writing status, the other status page should still be
   valid.
-- If power fails while writing application data, `update_state=RECEIVING` is
-  cleared on the next boot. The partially written slot is not bootable because
-  its manifest is missing or invalid.
+- If power fails while writing APP2 data, `update_state=RECEIVING` is cleared
+  on the next boot. APP1 is left untouched.
 - If power fails after image verification while `update_state=COMMITTING`, the
-  next boot verifies the target slot. A valid manifest is promoted back to trial
-  state; an invalid or missing manifest is rolled back by clearing the marker.
-- A slot becomes bootable only after image hash verification, manifest signature
-  verification, and manifest Flash write all succeed.
-- New FOTA target selection is rejected while a valid trial image is still
-  unconfirmed, protecting the confirmed fallback slot from erase.
+  next boot verifies APP2 as an APP1-linked staging image. A valid APP2 staging
+  image is copied into APP1 again; an invalid or missing APP2 manifest clears
+  the marker and keeps the previous APP1 policy.
+- APP1 becomes bootable only after APP2 hash verification, manifest signature
+  verification, APP2 manifest write, APP2-to-APP1 copy, and APP1 verification
+  all succeed.
 
 Power-loss proof argument:
 
@@ -302,29 +291,27 @@ The recovery design relies on these invariants:
 2. Flash status is stored in two pages. A status record is usable only when its
    magic, format version, record size, generation, and CRC are valid; otherwise
    the other valid page or default in-RAM status is used.
-3. The FOTA target is chosen from the inactive slot. If a valid trial image is
-   still unconfirmed, target selection returns `SECURE_BOOT_ERROR_STATE` instead
-   of erasing the confirmed fallback slot.
-4. A slot is not promoted to trial until the complete image hash and manifest
-   signature have been verified. During the manifest/trial commit window,
-   `update_state=COMMITTING` records which slot must be re-evaluated after
+3. The FOTA target is always APP2. APP1 is not erased until APP2 has a verified
+   image and signed manifest.
+4. APP1 is not published until the complete APP2 image hash and manifest
+   signature have been verified. During the manifest/publish commit window,
+   `update_state=COMMITTING` records that APP2 must be replayed into APP1 after
    reset.
 
 | Power-loss point | Recovery result | Why it remains safe |
 | ---------------- | --------------- | ------------------- |
-| Before `update_state=RECEIVING` is written | Previous status remains selected | No target slot has been erased by the update path. |
-| After `RECEIVING`, before or during slot erase | Recovery clears the marker | The target slot may be blank or partial, but invariant 1 rejects it. |
-| During image chunk writes | Recovery clears the marker | The image hash cannot match a complete signed manifest unless all bytes were written. |
-| After the final chunk, before `COMMITTING` | Recovery clears the marker | No new manifest/trial commit was recorded; boot falls back to confirmed or another valid slot. |
-| After `COMMITTING`, before manifest write completes | Recovery verifies the target slot, then clears or promotes | Partial/missing manifest fails invariant 1; a complete valid manifest is promoted to trial. |
-| After manifest write, before trial status commit | Recovery verifies the target slot and promotes it to trial | The manifest proves the image is complete and signed, so replaying the trial commit is safe. |
-| After trial status commit, before application confirm | Trial boot count policy applies | The image may boot once; if not confirmed, the next boot clears trial and selects confirmed/fallback. |
-| During `secure_boot_confirm_running_image()` status write | The older status page or newer valid page wins | If confirmation did not commit, the image remains trial; if it committed, `minimum_version` and `confirmed_slot` are valid. |
+| Before `update_state=RECEIVING` is written | Previous status remains selected | APP1 has not been touched. |
+| After `RECEIVING`, before or during APP2 erase | Recovery clears the marker | APP1 has not been touched. |
+| During APP2 chunk writes | Recovery clears the marker | APP1 has not been touched and APP2 has no complete valid manifest. |
+| After the final chunk, before `COMMITTING` | Recovery clears the marker | No publish commit was recorded. |
+| After `COMMITTING`, before APP2 manifest write completes | Recovery verifies APP2, then clears or publishes | Partial/missing manifest fails invariant 1; complete APP2 can be replayed. |
+| After APP2 manifest write, before/during APP1 copy | Recovery repeats APP2-to-APP1 copy | APP2 remains intact as the replay source. |
+| After APP1 copy, before status clear | Recovery repeats APP2-to-APP1 copy | Re-erasing and copying APP1 from the same verified APP2 image is idempotent. |
+| During `secure_boot_confirm_running_image()` status write | The older status page or newer valid page wins | APP1 remains verified before any jump. |
 
 Therefore a reset at any single point in the FOTA sequence leaves the device in
-one of three safe states: still running the previous confirmed image, waiting in
-bootloader recovery with no bootable image erased, or booting exactly one
-verified trial image that must confirm itself before it can become permanent.
+one of three safe states: still running the previous APP1 image, replaying a
+verified APP2-to-APP1 publish, or booting the verified APP1 image.
 
 ### Firmware RAM map
 
@@ -538,16 +525,17 @@ flowchart TD
     WRITE --> END[UPDATE_END]
     END --> VERIFY[Verify SHA + ECDSA]
     VERIFY --> COMMIT[Set update_state=COMMITTING]
-    COMMIT --> MANIFEST[Write manifest]
-    MANIFEST --> TRIAL[Set active_slot + trial_slot]
-    TRIAL --> JUMP[Jump to app]
+    COMMIT --> MANIFEST[Write APP2 manifest]
+    MANIFEST --> COPY[Copy APP2 to APP1]
+    COPY --> PUBLISH[Verify APP1 + clear update marker]
+    PUBLISH --> JUMP[Jump to APP1]
 ```
 
 If power is lost while `update_state=RECEIVING`, the next boot clears the
 marker and refuses to boot the partially written slot because its manifest is
 not valid. If power is lost while `update_state=COMMITTING`, the next boot
-verifies the target slot: a complete manifest is promoted to trial, and an
-incomplete manifest is rejected.
+verifies APP2 staging: a complete manifest is copied into APP1 again, and an
+incomplete manifest is rejected with the marker cleared.
 
 ## Sequence Diagram
 
@@ -701,9 +689,8 @@ stateDiagram-v2
 
 Boot result policy:
 
-- A trial image can boot only `SECURE_BOOT_TRIAL_BOOT_LIMIT` times.
-- If a trial boot is not confirmed, the next reset clears the trial state and
-  boots the confirmed/fallback image.
+- The bootloader jumps only to APP1.
+- APP2 is never selected as a boot target; it is only a staging/replay source.
 - `minimum_version` rejects images older than the latest confirmed version.
 
 ## Getting Started

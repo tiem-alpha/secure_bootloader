@@ -108,6 +108,18 @@ bool boot_flash_writer_flush(boot_flash_writer_t *writer);
 bool boot_flash_write_manifest(secure_boot_slot_t slot,
                                const secure_boot_manifest_t *manifest);
 
+/**
+ * @brief Erase one slot and copy the complete contents of another slot into it.
+ *
+ * @param[in] destination Slot to erase and program.
+ * @param[in] source Slot whose bytes are copied.
+ *
+ * @return true on success.
+ * @return false when arguments are invalid or Flash erase/program fails.
+ */
+bool boot_flash_copy_slot(secure_boot_slot_t destination,
+                          secure_boot_slot_t source);
+
 #ifdef __cplusplus
 }
 #endif

@@ -470,41 +470,40 @@ static bool boot_image_size_is_valid(uint32_t image_size)
 }
 
 /**
- * @brief Validate that the image vector table matches the selected slot.
+ * @brief Validate that the staged image vector table matches APP1 runtime.
  *
  * @details
- * The host does not send a slot. Secure boot policy selects the inactive slot
- * before Flash erase. The first firmware chunk must start at offset zero and
- * contain the initial MSP and reset handler so the bootloader can reject an
- * image that was linked for the other slot.
+ * FOTA is always written to APP2 as staging, but the committed application
+ * always runs from APP1 after publish. The first firmware chunk must therefore
+ * contain a vector table linked for APP1, not for the APP2 storage address.
  */
-static bool boot_vector_matches_slot(secure_boot_slot_t slot,
-                                     const uint8_t *data, uint16_t length,
-                                     uint32_t image_size)
+static bool boot_vector_matches_runtime(secure_boot_slot_t staging_slot,
+                                        const uint8_t *data, uint16_t length,
+                                        uint32_t image_size)
 {
-    uint32_t slot_base;
+    uint32_t runtime_base;
     uint32_t initial_msp;
     uint32_t reset_handler;
     uint32_t reset_address;
 
-    slot_base = secure_boot_slot_base(slot);
-    if (slot_base == 0U) {
-        boot_log_vector_reject("target_slot", slot, slot_base, image_size,
+    runtime_base = secure_boot_slot_base(SECURE_BOOT_SLOT_APP1);
+    if (staging_slot != SECURE_BOOT_SLOT_APP2 || runtime_base == 0U) {
+        boot_log_vector_reject("target_slot", staging_slot, runtime_base, image_size,
                                length, 0U, 0U, 0U);
         return false;
     }
     if (data == NULL) {
-        boot_log_vector_reject("chunk_data", slot, slot_base, image_size,
+        boot_log_vector_reject("chunk_data", staging_slot, runtime_base, image_size,
                                length, 0U, 0U, 0U);
         return false;
     }
     if (length < 8U) {
-        boot_log_vector_reject("chunk_len", slot, slot_base, image_size,
+        boot_log_vector_reject("chunk_len", staging_slot, runtime_base, image_size,
                                length, 0U, 0U, 0U);
         return false;
     }
     if (!boot_image_size_is_valid(image_size)) {
-        boot_log_vector_reject("image_size", slot, slot_base, image_size,
+        boot_log_vector_reject("image_size", staging_slot, runtime_base, image_size,
                                length, 0U, 0U, 0U);
         return false;
     }
@@ -514,20 +513,21 @@ static bool boot_vector_matches_slot(secure_boot_slot_t slot,
     reset_address = reset_handler & ~1UL;
 
     if (initial_msp < BOOT_RAM_BASE || initial_msp > BOOT_RAM_END) {
-        boot_log_vector_reject("initial_msp", slot, slot_base, image_size,
+        boot_log_vector_reject("initial_msp", staging_slot, runtime_base, image_size,
                                length, initial_msp, reset_handler,
                                reset_address);
         return false;
     }
     if ((reset_handler & 1UL) == 0U) {
-        boot_log_vector_reject("reset_handler_thumb", slot, slot_base,
+        boot_log_vector_reject("reset_handler_thumb", staging_slot, runtime_base,
                                image_size, length, initial_msp, reset_handler,
                                reset_address);
         return false;
     }
 
-    if (reset_address < slot_base || reset_address >= (slot_base + image_size)) {
-        boot_log_vector_reject("reset_handler_range", slot, slot_base,
+    if (reset_address < runtime_base ||
+        reset_address >= (runtime_base + image_size)) {
+        boot_log_vector_reject("reset_handler_range", staging_slot, runtime_base,
                                image_size, length, initial_msp, reset_handler,
                                reset_address);
         return false;
@@ -555,8 +555,8 @@ static bool boot_prepare_flash_target(boot_controller_t *controller,
         return false;
     }
 
-    if (!boot_vector_matches_slot(target_slot, request->data, request->length,
-                                  controller->expected_image_size)) {
+    if (!boot_vector_matches_runtime(target_slot, request->data, request->length,
+                                     controller->expected_image_size)) {
         log_print("FW rejected image vector table for target slot\r\n");
         controller->last_result = SECURE_BOOT_ERROR_MANIFEST;
         boot_log_update_error(controller->last_result);
@@ -616,9 +616,9 @@ static void boot_schedule_boot(boot_controller_t *controller)
  *
  * @details
  * Validates command shape and state, copies host-provided image metadata,
- * selects the inactive Flash target, starts the streaming SHA-256 context, then
+ * selects the APP2 staging target, starts the streaming SHA-256 context, then
  * enters RECEIVING. The first firmware chunk must still prove that the image
- * vector table was linked for the selected target slot.
+ * vector table was linked for APP1 runtime.
  *
  * @param[in,out] controller Controller instance. Must not be NULL.
  * @param[in] data Decoded UPDATE_BEGIN payload.
@@ -769,7 +769,7 @@ static void boot_receive_chunk(boot_controller_t *controller, const uint8_t *dat
  * @details
  * Flushes any pending odd Flash byte, compares the computed image digest against
  * the host-declared digest, builds the signed manifest, writes it to the target
- * slot, and requests trial boot state in persistent secure boot status.
+ * APP2 staging slot, then publishes APP2 into APP1 before boot.
  *
  * @param[in,out] controller Controller instance with a complete received image.
  *                           Must not be NULL.
@@ -782,7 +782,7 @@ static void boot_receive_chunk(boot_controller_t *controller, const uint8_t *dat
  *         expected image hash from UPDATE_BEGIN.
  * @return @ref SECURE_BOOT_ERROR_SIGNATURE when manifest construction or
  *         signature validation fails.
- * @return Any error returned by @ref secure_boot_request_trial.
+ * @return Any error returned by @ref secure_boot_publish_staged_update.
  *
  * @post Sensitive manifest bytes are zeroed before return.
  */
@@ -829,7 +829,7 @@ static secure_boot_result_t boot_commit_verified_update(
     }
 
     crypto_manager_secure_zero(&manifest, sizeof(manifest));
-    result = secure_boot_request_trial(controller->target_slot);
+    result = secure_boot_publish_staged_update(controller->target_slot);
     boot_log_update_error(result);
     return result;
 }
@@ -840,8 +840,8 @@ static secure_boot_result_t boot_commit_verified_update(
  * @details
  * Verifies that all expected image bytes have been written, finalizes the
  * streaming SHA-256 hash,
- * commits the manifest/trial state through @ref boot_commit_verified_update,
- * and schedules boot when verification succeeds.
+ * publishes the staged image through @ref boot_commit_verified_update, and
+ * schedules boot when verification succeeds.
  *
  * @param[in,out] controller Controller instance. Must not be NULL.
  * @param[in] data Decoded UPDATE_END payload.

@@ -92,8 +92,8 @@ typedef enum {
      * Finalizing the image and verifying hash/signature before committing.
      *
      * This is a transient state entered by UPDATE_END. The controller flushes
-     * Flash writes, validates SHA-256, builds/writes the manifest, and requests
-     * trial boot state.
+     * Flash writes, validates SHA-256, builds/writes the APP2 staging manifest,
+     * publishes it into APP1, and schedules boot.
      */
     BOOT_CONTROLLER_VERIFYING,
     /**
@@ -233,7 +233,8 @@ void boot_controller_poll(boot_controller_t *controller);
  *   chunk vector table matches the selected Flash target, write data to Flash,
  *   update streaming SHA-256, and refresh receive timeout.
  * - UPDATE_END: require full image length, finalize Flash write, compare image
- *   hash, write signed manifest, request trial boot, and schedule boot.
+ *   hash, write the APP2 signed manifest, publish APP2 into APP1, and schedule
+ *   boot.
  * - UPDATE_ABORT: clear transfer state, abort persistent update marker, and
  *   enter RECOVERY.
  *

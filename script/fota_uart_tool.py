@@ -47,6 +47,8 @@ SECURE_BOOT_MANIFEST_SIGNED_SIZE = 52
 
 BOOT_APP1_BASE = 0x0800A000
 BOOT_APP2_BASE = 0x0800C800
+RUNTIME_SLOT = 1
+STAGING_SLOT = 2
 BOOT_RAM_BASE = 0x20000000
 BOOT_RAM_END = 0x20005000
 
@@ -133,12 +135,7 @@ def describe_firmware_vector(info: dict) -> str:
 def expected_update_slot_from_report(report: dict) -> int:
     if report.get("target_update_slot") in (1, 2):
         return report["target_update_slot"]
-    active_slot = report.get("active_slot", 0)
-    if active_slot == 1:
-        return 2
-    if active_slot == 2:
-        return 1
-    return 1
+    return STAGING_SLOT
 
 
 def discover_firmware_folder(firmware_dir: str) -> dict[int, Path]:
@@ -162,6 +159,9 @@ def discover_firmware_folder(firmware_dir: str) -> dict[int, Path]:
         ):
             ignored.append(f"{path.name}: {describe_firmware_vector(info)}")
             continue
+        if linked_slot != RUNTIME_SLOT:
+            ignored.append(f"{path.name}: staging flow ignores {slot_name(linked_slot)} image")
+            continue
         if linked_slot in images:
             raise ValueError(
                 f"Folder contains multiple {slot_name(linked_slot)} images: "
@@ -169,12 +169,11 @@ def discover_firmware_folder(firmware_dir: str) -> dict[int, Path]:
             )
         images[linked_slot] = path
 
-    missing = [slot_name(slot) for slot in (1, 2) if slot not in images]
-    if missing:
+    if RUNTIME_SLOT not in images:
         detail = f"; ignored: {'; '.join(ignored)}" if ignored else ""
         raise ValueError(
-            "Firmware folder must contain exactly one APP1 .bin and one APP2 .bin "
-            f"linked for this flash layout; missing {', '.join(missing)}{detail}"
+            "Firmware folder must contain one APP1-linked .bin for the fixed "
+            f"runtime slot{detail}"
         )
     return images
 
@@ -335,37 +334,53 @@ def sign_firmware(firmware_path: str, key_path: str, version: int) -> dict:
     }
 
 
+def sign_runtime_firmware(firmware_path: str, key_path: str, version: int) -> dict:
+    signed = sign_firmware(firmware_path, key_path, version)
+    if slot_id(signed["linked_slot"]) != RUNTIME_SLOT:
+        raise ValueError(
+            f"Firmware .bin is linked for {signed['linked_slot']}, "
+            f"but this FOTA flow requires {slot_name(RUNTIME_SLOT)} runtime firmware"
+        )
+    return signed
+
+
 def sign_firmware_folder(firmware_dir: str, key_path: str, version: int) -> dict:
     images = discover_firmware_folder(firmware_dir)
     slots = {}
-    for slot in (1, 2):
-        signed = sign_firmware(str(images[slot]), key_path, version)
-        if slot_id(signed["linked_slot"]) != slot:
-            raise ValueError(
-                f"{images[slot].name} was expected to be {slot_name(slot)} "
-                f"but inspected as {signed['linked_slot']}"
-            )
-        slots[slot_name(slot)] = signed
+    signed = sign_firmware(str(images[RUNTIME_SLOT]), key_path, version)
+    if slot_id(signed["linked_slot"]) != RUNTIME_SLOT:
+        raise ValueError(
+            f"{images[RUNTIME_SLOT].name} was expected to be {slot_name(RUNTIME_SLOT)} "
+            f"but inspected as {signed['linked_slot']}"
+        )
+    slots[slot_name(RUNTIME_SLOT)] = signed
     return {
         "firmware_dir": str(Path(firmware_dir).resolve()),
         "image_version": version,
+        "runtime_slot": slot_name(RUNTIME_SLOT),
+        "staging_slot": slot_name(STAGING_SLOT),
         "slots": slots,
     }
 
 
 def signed_for_slot(signed_bundle: dict, target_slot: int) -> dict:
-    slot = slot_name(target_slot)
+    if target_slot != STAGING_SLOT:
+        raise ValueError(
+            f"Bootloader selected {slot_name(target_slot)}, but this tool expects "
+            f"fixed staging slot {slot_name(STAGING_SLOT)}"
+        )
+    slot = slot_name(RUNTIME_SLOT)
     if "slots" not in signed_bundle:
         if signed_bundle.get("linked_slot") == slot:
             return signed_bundle
         raise ValueError(
             f"Signed firmware is linked for {signed_bundle.get('linked_slot')}, "
-            f"but bootloader needs {slot}"
+            f"but runtime slot must be {slot}"
         )
     try:
         return signed_bundle["slots"][slot]
     except KeyError as exc:
-        raise ValueError(f"Signed bundle does not contain {slot} firmware") from exc
+        raise ValueError(f"Signed bundle does not contain {slot} runtime firmware") from exc
 
 
 def parse_report(payload: bytes) -> dict:
@@ -585,7 +600,10 @@ class FotaClient:
             else expected_update_slot_from_report(begin_report)
         )
         self.log(f"Firmware vector: {describe_firmware_vector(vector_info)}")
-        self.log(f"Bootloader target slot: {slot_name(target_slot)}")
+        self.log(
+            f"Bootloader staging slot: {slot_name(target_slot)}; "
+            f"runtime slot: {slot_name(RUNTIME_SLOT)}"
+        )
         if (
             not vector_info["msp_valid"]
             or not vector_info["reset_thumb"]
@@ -596,13 +614,19 @@ class FotaClient:
                 "Firmware vector table is invalid for this flash layout "
                 f"({describe_firmware_vector(vector_info)})"
             )
-        if vector_info["linked_slot"] != target_slot:
+        if target_slot != STAGING_SLOT:
+            self.abort_update()
+            raise RuntimeError(
+                f"Bootloader selected {slot_name(target_slot)}, but this flow "
+                f"requires staging slot {slot_name(STAGING_SLOT)}."
+            )
+        if vector_info["linked_slot"] != RUNTIME_SLOT:
             self.abort_update()
             raise RuntimeError(
                 f"Firmware is linked for {slot_name(vector_info['linked_slot'])}, "
-                f"but bootloader selected {slot_name(target_slot)}. "
+                f"but it must run from {slot_name(RUNTIME_SLOT)}. "
                 f"Rebuild the application for base "
-                f"0x{(BOOT_APP1_BASE if target_slot == 1 else BOOT_APP2_BASE):08X}."
+                f"0x{BOOT_APP1_BASE:08X}."
             )
         self.log("Bootloader accepted update")
 
@@ -633,7 +657,7 @@ class FotaToolGui:
 
         self.key_path = tk.StringVar()
         self.cert_path = tk.StringVar()
-        self.fw_dir = tk.StringVar()
+        self.fw_path = tk.StringVar()
         self.version = tk.StringVar(value="1")
         self.port = tk.StringVar()
         self.baud = tk.StringVar(value="115200")
@@ -643,9 +667,7 @@ class FotaToolGui:
 
         self._path_row(main, 0, "Private key", self.key_path, self.pick_key)
         self._path_row(main, 1, "Certificate", self.cert_path, self.pick_cert)
-        self._path_row(
-            main, 2, "Firmware folder", self.fw_dir, self.pick_firmware_folder
-        )
+        self._path_row(main, 2, "Firmware .bin", self.fw_path, self.pick_firmware_file)
 
         controls = ttk.Frame(main)
         controls.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0))
@@ -716,12 +738,13 @@ class FotaToolGui:
         if path:
             self.cert_path.set(path)
 
-    def pick_firmware_folder(self):
-        path = filedialog.askdirectory(
-            title="Select firmware folder with APP1 and APP2 .bin files"
+    def pick_firmware_file(self):
+        path = filedialog.askopenfilename(
+            title="Select APP1-linked firmware .bin file",
+            filetypes=[("Firmware binary", "*.bin"), ("All files", "*.*")],
         )
         if path:
-            self.fw_dir.set(path)
+            self.fw_path.set(path)
 
     def run_worker(self, fn):
         if self.worker and self.worker.is_alive():
@@ -746,25 +769,23 @@ class FotaToolGui:
 
     def sign_firmware(self):
         try:
-            if not self.fw_dir.get():
-                raise ValueError("Select firmware folder")
+            if not self.fw_path.get():
+                raise ValueError("Select firmware .bin file")
             if not self.key_path.get():
                 raise ValueError("Select private key")
             version = int(self.version.get(), 0)
-            self.signed = sign_firmware_folder(
-                self.fw_dir.get(), self.key_path.get(), version
+            self.signed = sign_runtime_firmware(
+                self.fw_path.get(), self.key_path.get(), version
             )
-            self.log(f"Signed firmware bundle version={version}")
-            for slot in ("APP1", "APP2"):
-                signed = self.signed["slots"][slot]
-                self.log(
-                    f"{slot}: file={Path(signed['firmware_path']).name} "
-                    f"size={signed['image_size']} "
-                    f"msp={signed['vector_initial_msp']} "
-                    f"reset={signed['vector_reset_handler']}"
-                )
-                self.log(f"{slot}: SHA256={signed['image_sha256']}")
-                self.log(f"{slot}: Signature={signed['signature_raw']}")
+            self.log(f"Signed firmware version={version}")
+            self.log(
+                f"APP1: file={Path(self.signed['firmware_path']).name} "
+                f"size={self.signed['image_size']} "
+                f"msp={self.signed['vector_initial_msp']} "
+                f"reset={self.signed['vector_reset_handler']}"
+            )
+            self.log(f"APP1: SHA256={self.signed['image_sha256']}")
+            self.log(f"APP1: Signature={self.signed['signature_raw']}")
         except Exception as exc:
             messagebox.showerror("Sign failed", str(exc))
 
@@ -793,8 +814,8 @@ class FotaToolGui:
             client = None
             try:
                 if self.signed is None:
-                    self.signed = sign_firmware_folder(
-                        self.fw_dir.get(),
+                    self.signed = sign_runtime_firmware(
+                        self.fw_path.get(),
                         self.key_path.get(),
                         int(self.version.get(), 0),
                     )
@@ -816,8 +837,8 @@ class FotaToolGui:
                     )
                 signed = signed_for_slot(self.signed, target_slot)
                 self.log(
-                    f"Target slot is {slot_name(target_slot)}; using "
-                    f"{Path(signed['firmware_path']).name}"
+                    f"Staging slot is {slot_name(target_slot)}; using "
+                    f"APP1 runtime image {Path(signed['firmware_path']).name}"
                 )
                 client.transfer(signed, chunk, delay_s, expected_target_slot=target_slot)
                 self.log("FOTA transfer complete")
@@ -946,7 +967,7 @@ def main():
     sign.set_defaults(func=cli_sign)
 
     sign_folder = sub.add_parser(
-        "sign-folder", help="sign APP1/APP2 firmware binaries from a folder"
+        "sign-folder", help="sign the APP1 runtime firmware binary from a folder"
     )
     sign_folder.add_argument("--firmware-dir", required=True)
     sign_folder.add_argument("--key", required=True)

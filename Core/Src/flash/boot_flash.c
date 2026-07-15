@@ -159,3 +159,37 @@ bool boot_flash_write_manifest(secure_boot_slot_t slot,
     }
     return true;
 }
+
+/** @copydoc boot_flash_copy_slot */
+bool boot_flash_copy_slot(secure_boot_slot_t destination,
+                          secure_boot_slot_t source)
+{
+    uint32_t destination_base = secure_boot_slot_base(destination);
+    uint32_t source_base = secure_boot_slot_base(source);
+    uint32_t offset;
+
+    if (destination_base == 0U || source_base == 0U ||
+        destination == source) {
+        return false;
+    }
+
+    if (!boot_flash_erase_slot(destination)) {
+        return false;
+    }
+
+    for (offset = 0U; offset < BOOT_APP_SLOT_SIZE; offset += 2U) {
+        const uint8_t *source_bytes = (const uint8_t *)(source_base + offset);
+        uint16_t half_word = (uint16_t)source_bytes[0] |
+                             ((uint16_t)source_bytes[1] << 8U);
+
+        if (half_word == 0xFFFFU) {
+            continue;
+        }
+        if (!boot_platform_flash_program_half_word(destination_base + offset,
+                                                   half_word)) {
+            return false;
+        }
+    }
+
+    return true;
+}

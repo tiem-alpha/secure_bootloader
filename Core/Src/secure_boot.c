@@ -8,13 +8,16 @@
 #include "platform/boot_platform.h"
 #include "secure/crypto_manager.h"
 
-/** Maximum number of boot attempts allowed for one trial image. */
-#define SECURE_BOOT_TRIAL_BOOT_LIMIT 1U
+/** Fixed application slot that is allowed to run. */
+#define SECURE_BOOT_RUNTIME_SLOT     SECURE_BOOT_SLOT_APP1
+/** Fixed staging slot used for received FOTA images. */
+#define SECURE_BOOT_STAGING_SLOT     SECURE_BOOT_SLOT_APP2
 
-static secure_boot_slot_t secure_boot_select_active_slot(
-    const secure_boot_status_t *status);
 static secure_boot_result_t secure_boot_verify_acceptable_slot(
     secure_boot_slot_t slot, uint32_t minimum_version,
+    const secure_boot_manifest_t **manifest_out);
+static secure_boot_result_t secure_boot_verify_staged_slot(
+    secure_boot_slot_t staging_slot, uint32_t minimum_version,
     const secure_boot_manifest_t **manifest_out);
 
 #ifdef LOG_ENABLE
@@ -177,33 +180,37 @@ const secure_boot_manifest_t *secure_boot_manifest_for_slot(secure_boot_slot_t s
  * a Thumb address, and the reset handler target must lie inside the signed
  * image byte range.
  *
- * @param[in] image_base Absolute Flash address of the application vector table.
+ * @param[in] vector_base Absolute Flash address of the stored vector table.
+ * @param[in] linked_image_base Runtime base address the image was linked for.
  * @param[in] image_size Signed application image size in bytes.
  *
  * @return true when the vector table is plausible for this MCU layout.
  * @return false when MSP or reset handler validation fails.
  */
-static bool secure_boot_vector_table_is_valid(uint32_t image_base, uint32_t image_size)
+static bool secure_boot_vector_table_is_valid(uint32_t vector_base,
+                                              uint32_t linked_image_base,
+                                              uint32_t image_size)
 {
-    const uint32_t *vectors = (const uint32_t *)image_base;
+    const uint32_t *vectors = (const uint32_t *)vector_base;
     uint32_t initial_msp = vectors[0];
     uint32_t reset_handler = vectors[1];
     uint32_t reset_address = reset_handler & ~1UL;
 
     if (initial_msp < BOOT_RAM_BASE || initial_msp > BOOT_RAM_END) {
-        secure_boot_log_vector_reject("initial_msp", image_base, image_size,
+        secure_boot_log_vector_reject("initial_msp", vector_base, image_size,
                                       initial_msp, reset_handler,
                                       reset_address);
         return false;
     }
     if ((reset_handler & 1UL) == 0U) {
-        secure_boot_log_vector_reject("reset_handler_thumb", image_base,
+        secure_boot_log_vector_reject("reset_handler_thumb", vector_base,
                                       image_size, initial_msp, reset_handler,
                                       reset_address);
         return false;
     }
-    if (reset_address < image_base || reset_address >= image_base + image_size) {
-        secure_boot_log_vector_reject("reset_handler_range", image_base,
+    if (reset_address < linked_image_base ||
+        reset_address >= linked_image_base + image_size) {
+        secure_boot_log_vector_reject("reset_handler_range", vector_base,
                                       image_size, initial_msp, reset_handler,
                                       reset_address);
         return false;
@@ -213,11 +220,13 @@ static bool secure_boot_vector_table_is_valid(uint32_t image_base, uint32_t imag
 }
 
 /** @copydoc secure_boot_verify_slot */
-secure_boot_result_t secure_boot_verify_slot(secure_boot_slot_t slot,
-                                             const secure_boot_manifest_t **manifest_out)
+static secure_boot_result_t secure_boot_verify_slot_as_runtime(
+    secure_boot_slot_t storage_slot, secure_boot_slot_t runtime_slot,
+    const secure_boot_manifest_t **manifest_out)
 {
     const secure_boot_manifest_t *manifest;
-    uint32_t image_base;
+    uint32_t storage_base;
+    uint32_t runtime_base;
     uint8_t image_digest[SHA256_DIGEST_SIZE];
     uint8_t manifest_digest[SHA256_DIGEST_SIZE];
 
@@ -225,12 +234,14 @@ secure_boot_result_t secure_boot_verify_slot(secure_boot_slot_t slot,
         *manifest_out = NULL;
     }
 
-    if (!secure_boot_slot_is_valid(slot)) {
+    if (!secure_boot_slot_is_valid(storage_slot) ||
+        !secure_boot_slot_is_valid(runtime_slot)) {
         return SECURE_BOOT_ERROR_ARGUMENT;
     }
 
-    image_base = secure_boot_slot_base(slot);
-    manifest = secure_boot_manifest_for_slot(slot);
+    storage_base = secure_boot_slot_base(storage_slot);
+    runtime_base = secure_boot_slot_base(runtime_slot);
+    manifest = secure_boot_manifest_for_slot(storage_slot);
     if (manifest->magic != SECURE_BOOT_MANIFEST_MAGIC) {
         secure_boot_log_manifest_u32("magic", manifest->magic,
                                      SECURE_BOOT_MANIFEST_MAGIC);
@@ -258,12 +269,13 @@ secure_boot_result_t secure_boot_verify_slot(secure_boot_slot_t slot,
         return SECURE_BOOT_ERROR_MANIFEST;
     }
 
-    if (!secure_boot_vector_table_is_valid(image_base, manifest->image_size)) {
+    if (!secure_boot_vector_table_is_valid(storage_base, runtime_base,
+                                           manifest->image_size)) {
         log_print("SB verify failed: vector table\r\n");
         return SECURE_BOOT_ERROR_MANIFEST;
     }
 
-    sha256_compute((const void *)image_base, manifest->image_size, image_digest);
+    sha256_compute((const void *)storage_base, manifest->image_size, image_digest);
     if (!crypto_manager_constant_time_equal(image_digest, manifest->image_sha256,
                                             sizeof(image_digest))) {
         crypto_manager_secure_zero(image_digest, sizeof(image_digest));
@@ -292,6 +304,13 @@ secure_boot_result_t secure_boot_verify_slot(secure_boot_slot_t slot,
         *manifest_out = manifest;
     }
     return SECURE_BOOT_OK;
+}
+
+/** @copydoc secure_boot_verify_slot */
+secure_boot_result_t secure_boot_verify_slot(secure_boot_slot_t slot,
+                                             const secure_boot_manifest_t **manifest_out)
+{
+    return secure_boot_verify_slot_as_runtime(slot, slot, manifest_out);
 }
 
 /**
@@ -429,7 +448,6 @@ secure_boot_result_t secure_boot_recover_interrupted_update(void)
 {
     secure_boot_status_t status;
     const secure_boot_status_t *source = secure_boot_load_status(&status);
-    const secure_boot_manifest_t *manifest = NULL;
     secure_boot_slot_t update_slot = (secure_boot_slot_t)status.update_slot;
 
     if (status.update_state == SECURE_BOOT_UPDATE_IDLE) {
@@ -437,14 +455,14 @@ secure_boot_result_t secure_boot_recover_interrupted_update(void)
     }
 
     if (status.update_state == SECURE_BOOT_UPDATE_COMMITTING &&
-        secure_boot_slot_is_valid(update_slot) &&
-        secure_boot_verify_acceptable_slot(update_slot, status.minimum_version,
-                                           &manifest) == SECURE_BOOT_OK) {
-        status.trial_slot = (uint32_t)update_slot;
-        status.trial_boot_count = 0U;
-        status.active_slot = (uint32_t)update_slot;
-        secure_boot_clear_update_marker(&status);
-        return secure_boot_commit_status(&status, source);
+        update_slot == SECURE_BOOT_STAGING_SLOT) {
+        secure_boot_result_t publish_result =
+            secure_boot_publish_staged_update(update_slot);
+
+        if (publish_result == SECURE_BOOT_OK ||
+            publish_result == SECURE_BOOT_ERROR_FLASH) {
+            return publish_result;
+        }
     }
 
     secure_boot_clear_update_marker(&status);
@@ -457,7 +475,7 @@ secure_boot_result_t secure_boot_begin_update(secure_boot_slot_t slot)
     secure_boot_status_t status;
     const secure_boot_status_t *source = secure_boot_load_status(&status);
 
-    if (!secure_boot_slot_is_valid(slot)) {
+    if (slot != SECURE_BOOT_STAGING_SLOT) {
         log_print("SB verify failed: invalid slot\r\n");
         return SECURE_BOOT_ERROR_ARGUMENT;
     }
@@ -476,7 +494,7 @@ secure_boot_result_t secure_boot_mark_update_committing(secure_boot_slot_t slot)
     secure_boot_status_t status;
     const secure_boot_status_t *source = secure_boot_load_status(&status);
 
-    if (!secure_boot_slot_is_valid(slot)) {
+    if (slot != SECURE_BOOT_STAGING_SLOT) {
         return SECURE_BOOT_ERROR_ARGUMENT;
     }
     if (status.update_state != SECURE_BOOT_UPDATE_RECEIVING ||
@@ -532,6 +550,77 @@ static secure_boot_result_t secure_boot_verify_acceptable_slot(
     return SECURE_BOOT_OK;
 }
 
+/**
+ * @brief Verify a staging slot containing an image linked for APP1.
+ */
+static secure_boot_result_t secure_boot_verify_staged_slot(
+    secure_boot_slot_t staging_slot, uint32_t minimum_version,
+    const secure_boot_manifest_t **manifest_out)
+{
+    secure_boot_result_t result;
+
+    if (staging_slot != SECURE_BOOT_STAGING_SLOT) {
+        return SECURE_BOOT_ERROR_ARGUMENT;
+    }
+
+    result = secure_boot_verify_slot_as_runtime(staging_slot,
+                                                SECURE_BOOT_RUNTIME_SLOT,
+                                                manifest_out);
+    if (result != SECURE_BOOT_OK) {
+        return result;
+    }
+    if ((*manifest_out)->image_version < minimum_version) {
+        uint32_t image_version = (*manifest_out)->image_version;
+        *manifest_out = NULL;
+        secure_boot_log_rollback(image_version, minimum_version);
+        return SECURE_BOOT_ERROR_ROLLBACK;
+    }
+    return SECURE_BOOT_OK;
+}
+
+/** @copydoc secure_boot_publish_staged_update */
+secure_boot_result_t secure_boot_publish_staged_update(
+    secure_boot_slot_t staging_slot)
+{
+    secure_boot_status_t status;
+    const secure_boot_status_t *source = secure_boot_load_status(&status);
+    const secure_boot_manifest_t *manifest = NULL;
+    secure_boot_result_t result;
+
+    if (staging_slot != SECURE_BOOT_STAGING_SLOT) {
+        return SECURE_BOOT_ERROR_ARGUMENT;
+    }
+    if (status.update_state != SECURE_BOOT_UPDATE_COMMITTING ||
+        status.update_slot != (uint32_t)staging_slot) {
+        return SECURE_BOOT_ERROR_STATE;
+    }
+
+    result = secure_boot_verify_staged_slot(staging_slot, status.minimum_version,
+                                            &manifest);
+    if (result != SECURE_BOOT_OK) {
+        return result;
+    }
+
+    if (!boot_flash_copy_slot(SECURE_BOOT_RUNTIME_SLOT, staging_slot)) {
+        return SECURE_BOOT_ERROR_FLASH;
+    }
+
+    result = secure_boot_verify_acceptable_slot(SECURE_BOOT_RUNTIME_SLOT,
+                                                status.minimum_version,
+                                                &manifest);
+    if (result != SECURE_BOOT_OK) {
+        return result;
+    }
+
+    status.active_slot = (uint32_t)SECURE_BOOT_RUNTIME_SLOT;
+    status.confirmed_slot = (uint32_t)SECURE_BOOT_RUNTIME_SLOT;
+    status.trial_slot = SECURE_BOOT_SLOT_NONE;
+    status.trial_boot_count = 0U;
+    status.minimum_version = manifest->image_version;
+    secure_boot_clear_update_marker(&status);
+    return secure_boot_commit_status(&status, source);
+}
+
 /** @copydoc secure_boot_request_trial */
 secure_boot_result_t secure_boot_request_trial(secure_boot_slot_t slot)
 {
@@ -540,14 +629,20 @@ secure_boot_result_t secure_boot_request_trial(secure_boot_slot_t slot)
     const secure_boot_manifest_t *manifest = NULL;
     secure_boot_result_t result;
 
+    if (slot != SECURE_BOOT_RUNTIME_SLOT) {
+        return SECURE_BOOT_ERROR_ARGUMENT;
+    }
+
     result = secure_boot_verify_acceptable_slot(slot, status.minimum_version, &manifest);
     if (result != SECURE_BOOT_OK) {
         return result;
     }
 
-    status.trial_slot = (uint32_t)slot;
+    status.confirmed_slot = (uint32_t)slot;
+    status.trial_slot = SECURE_BOOT_SLOT_NONE;
     status.trial_boot_count = 0U;
     status.active_slot = (uint32_t)slot;
+    status.minimum_version = manifest->image_version;
     secure_boot_clear_update_marker(&status);
     return secure_boot_commit_status(&status, source);
 }
@@ -560,8 +655,7 @@ secure_boot_result_t secure_boot_confirm_running_image(secure_boot_slot_t slot)
     const secure_boot_manifest_t *manifest = NULL;
     secure_boot_result_t result;
 
-    if (status.trial_slot != (uint32_t)slot ||
-        status.trial_boot_count != SECURE_BOOT_TRIAL_BOOT_LIMIT) {
+    if (slot != SECURE_BOOT_RUNTIME_SLOT) {
         return SECURE_BOOT_ERROR_STATE;
     }
 
@@ -578,109 +672,11 @@ secure_boot_result_t secure_boot_confirm_running_image(secure_boot_slot_t slot)
     return secure_boot_commit_status(&status, source);
 }
 
-/**
- * @brief Select the best non-trial fallback image.
- *
- * @details
- * Both application slots are verified against the current minimum version. If
- * both are valid, the higher image version is selected. If only one is valid,
- * that slot is selected.
- *
- * @param[in] status Current secure boot status. Must not be NULL.
- *
- * @return Selected slot, or @ref SECURE_BOOT_SLOT_NONE when no valid fallback
- *         image exists.
- */
-static secure_boot_slot_t secure_boot_select_fallback(const secure_boot_status_t *status)
-{
-    const secure_boot_manifest_t *app1 = NULL;
-    const secure_boot_manifest_t *app2 = NULL;
-    bool app1_valid = secure_boot_verify_acceptable_slot(SECURE_BOOT_SLOT_APP1,
-                                                           status->minimum_version,
-                                                           &app1) == SECURE_BOOT_OK;
-    bool app2_valid = secure_boot_verify_acceptable_slot(SECURE_BOOT_SLOT_APP2,
-                                                           status->minimum_version,
-                                                           &app2) == SECURE_BOOT_OK;
-
-    if (app1_valid && (!app2_valid || app1->image_version >= app2->image_version)) {
-        return SECURE_BOOT_SLOT_APP1;
-    }
-    if (app2_valid) {
-        return SECURE_BOOT_SLOT_APP2;
-    }
-    return SECURE_BOOT_SLOT_NONE;
-}
-
-/**
- * @brief Return the other application slot.
- *
- * @param[in] slot Application slot to invert.
- *
- * @return The opposite app slot, or @ref SECURE_BOOT_SLOT_NONE for invalid
- *         input.
- */
-static secure_boot_slot_t secure_boot_opposite_slot(secure_boot_slot_t slot)
-{
-    if (slot == SECURE_BOOT_SLOT_APP1) {
-        return SECURE_BOOT_SLOT_APP2;
-    }
-    if (slot == SECURE_BOOT_SLOT_APP2) {
-        return SECURE_BOOT_SLOT_APP1;
-    }
-    return SECURE_BOOT_SLOT_NONE;
-}
-
-/**
- * @brief Identify the application slot that must not be erased by FOTA.
- *
- * @details
- * A trial slot is considered active only after at least one trial boot was
- * consumed. A pending trial with boot count zero has not run yet, so the
- * confirmed slot remains the protected running image. If no status field names
- * a verified active image, the normal fallback selection is used.
- *
- * @param[in] status Current secure boot status. Must not be NULL.
- *
- * @return Active/protected slot, or @ref SECURE_BOOT_SLOT_NONE when none can be
- *         identified.
- */
-static secure_boot_slot_t secure_boot_select_active_slot(const secure_boot_status_t *status)
-{
-    const secure_boot_manifest_t *manifest = NULL;
-
-    if (secure_boot_slot_is_valid((secure_boot_slot_t)status->active_slot) &&
-        secure_boot_verify_acceptable_slot((secure_boot_slot_t)status->active_slot,
-                                           status->minimum_version,
-                                           &manifest) == SECURE_BOOT_OK) {
-        return (secure_boot_slot_t)status->active_slot;
-    }
-
-    if (secure_boot_slot_is_valid((secure_boot_slot_t)status->trial_slot) &&
-        status->trial_boot_count > 0U &&
-        secure_boot_verify_acceptable_slot((secure_boot_slot_t)status->trial_slot,
-                                           status->minimum_version,
-                                           &manifest) == SECURE_BOOT_OK) {
-        return (secure_boot_slot_t)status->trial_slot;
-    }
-
-    if (secure_boot_slot_is_valid((secure_boot_slot_t)status->confirmed_slot) &&
-        secure_boot_verify_acceptable_slot((secure_boot_slot_t)status->confirmed_slot,
-                                           status->minimum_version,
-                                           &manifest) == SECURE_BOOT_OK) {
-        return (secure_boot_slot_t)status->confirmed_slot;
-    }
-
-    return secure_boot_select_fallback(status);
-}
-
 /** @copydoc secure_boot_select_update_slot */
 secure_boot_result_t secure_boot_select_update_slot(
     secure_boot_slot_t *selected_slot)
 {
     secure_boot_status_t status;
-    secure_boot_slot_t active_slot;
-    secure_boot_slot_t candidate_slot;
-    const secure_boot_manifest_t *manifest = NULL;
 
     if (selected_slot == NULL) {
         return SECURE_BOOT_ERROR_ARGUMENT;
@@ -691,25 +687,8 @@ secure_boot_result_t secure_boot_select_update_slot(
     if (status.update_state != SECURE_BOOT_UPDATE_IDLE) {
         return SECURE_BOOT_ERROR_STATE;
     }
-    if (secure_boot_slot_is_valid((secure_boot_slot_t)status.trial_slot) &&
-        secure_boot_verify_acceptable_slot((secure_boot_slot_t)status.trial_slot,
-                                           status.minimum_version,
-                                           &manifest) == SECURE_BOOT_OK) {
-        return SECURE_BOOT_ERROR_STATE;
-    }
 
-    active_slot = secure_boot_select_active_slot(&status);
-    if (active_slot == SECURE_BOOT_SLOT_NONE) {
-        *selected_slot = SECURE_BOOT_SLOT_APP1;
-        return SECURE_BOOT_OK;
-    }
-
-    candidate_slot = secure_boot_opposite_slot(active_slot);
-    if (!secure_boot_slot_is_valid(candidate_slot)) {
-        return SECURE_BOOT_ERROR_STATE;
-    }
-
-    *selected_slot = candidate_slot;
+    *selected_slot = SECURE_BOOT_STAGING_SLOT;
     return SECURE_BOOT_OK;
 }
 
@@ -739,60 +718,38 @@ secure_boot_result_t secure_boot_boot(void)
     secure_boot_status_t status;
     const secure_boot_status_t *source = secure_boot_load_status(&status);
     const secure_boot_manifest_t *manifest = NULL;
-    secure_boot_slot_t selected = SECURE_BOOT_SLOT_NONE;
-    secure_boot_slot_t expired_trial = SECURE_BOOT_SLOT_NONE;
     secure_boot_result_t result;
 
-    if (secure_boot_slot_is_valid((secure_boot_slot_t)status.trial_slot)) {
-        result = secure_boot_verify_acceptable_slot((secure_boot_slot_t)status.trial_slot,
-                                                    status.minimum_version, &manifest);
-        if (result == SECURE_BOOT_OK &&
-            status.trial_boot_count < SECURE_BOOT_TRIAL_BOOT_LIMIT) {
-            status.trial_boot_count++;
-            result = secure_boot_commit_status(&status, source);
-            if (result != SECURE_BOOT_OK) {
-                return result;
-            }
-            selected = (secure_boot_slot_t)status.trial_slot;
-        } else {
-            expired_trial = (secure_boot_slot_t)status.trial_slot;
-            status.trial_slot = SECURE_BOOT_SLOT_NONE;
-            status.trial_boot_count = 0U;
-            if (status.active_slot == (uint32_t)expired_trial) {
-                status.active_slot = secure_boot_slot_is_valid(
-                                         (secure_boot_slot_t)status.confirmed_slot)
-                                         ? status.confirmed_slot
-                                         : SECURE_BOOT_SLOT_NONE;
-            }
-            result = secure_boot_commit_status(&status, source);
-            if (result != SECURE_BOOT_OK) {
-                return result;
-            }
+    if (status.update_state == SECURE_BOOT_UPDATE_COMMITTING &&
+        status.update_slot == (uint32_t)SECURE_BOOT_STAGING_SLOT) {
+        result = secure_boot_publish_staged_update(SECURE_BOOT_STAGING_SLOT);
+        if (result != SECURE_BOOT_OK) {
+            return result;
         }
+        source = secure_boot_load_status(&status);
     }
 
-    if (selected == SECURE_BOOT_SLOT_NONE &&
-        secure_boot_slot_is_valid((secure_boot_slot_t)status.confirmed_slot) &&
-        secure_boot_verify_acceptable_slot((secure_boot_slot_t)status.confirmed_slot,
-                                           status.minimum_version, &manifest) == SECURE_BOOT_OK) {
-        selected = (secure_boot_slot_t)status.confirmed_slot;
-    }
-
-    if (selected == SECURE_BOOT_SLOT_NONE) {
-        selected = secure_boot_select_fallback(&status);
-    }
-    if (selected == SECURE_BOOT_SLOT_NONE) {
+    result = secure_boot_verify_acceptable_slot(SECURE_BOOT_RUNTIME_SLOT,
+                                                status.minimum_version,
+                                                &manifest);
+    if (result != SECURE_BOOT_OK) {
         return SECURE_BOOT_ERROR_NO_VALID_IMAGE;
     }
 
-    if (status.active_slot != (uint32_t)selected) {
-        status.active_slot = (uint32_t)selected;
+    if (status.active_slot != (uint32_t)SECURE_BOOT_RUNTIME_SLOT ||
+        status.confirmed_slot != (uint32_t)SECURE_BOOT_RUNTIME_SLOT ||
+        status.trial_slot != SECURE_BOOT_SLOT_NONE ||
+        status.trial_boot_count != 0U) {
+        status.active_slot = (uint32_t)SECURE_BOOT_RUNTIME_SLOT;
+        status.confirmed_slot = (uint32_t)SECURE_BOOT_RUNTIME_SLOT;
+        status.trial_slot = SECURE_BOOT_SLOT_NONE;
+        status.trial_boot_count = 0U;
         result = secure_boot_commit_status(&status, source);
         if (result != SECURE_BOOT_OK) {
             return result;
         }
     }
 
-    secure_boot_jump_to_image(selected);
+    secure_boot_jump_to_image(SECURE_BOOT_RUNTIME_SLOT);
     return SECURE_BOOT_ERROR_STATE;
 }

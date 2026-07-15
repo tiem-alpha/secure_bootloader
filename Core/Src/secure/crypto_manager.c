@@ -3,7 +3,20 @@
 #include <stddef.h>
 #include <string.h>
 
-/** @copydoc crypto_manager_constant_time_equal */
+/**
+ * @brief Compare two buffers for equality in constant time.
+ *
+ * @details
+ * This function compares two buffers of the same length for equality, and
+ * returns 1 if they are equal and 0 if they are not. The comparison is done
+ * in constant time to prevent timing attacks.
+ *
+ * @param[in] a Pointer to the first buffer.
+ * @param[in] b Pointer to the second buffer.
+ * @param[in] length Length of the buffers in bytes.
+ *
+ * @return 1 if the buffers are equal, 0 otherwise.
+ */
 int crypto_manager_constant_time_equal(const uint8_t *a, const uint8_t *b,
                                        size_t length)
 {
@@ -20,7 +33,12 @@ int crypto_manager_constant_time_equal(const uint8_t *a, const uint8_t *b,
     return difference == 0U;
 }
 
-/** @copydoc crypto_manager_secure_zero */
+/**
+ * @brief Securely zero out a memory buffer.
+ *
+ * @param[in,out] data Pointer to the memory buffer to zero out.
+ * @param[in] length Length of the buffer in bytes.
+ */
 void crypto_manager_secure_zero(void *data, size_t length)
 {
     volatile uint8_t *p = (volatile uint8_t *)data;
@@ -34,7 +52,11 @@ void crypto_manager_secure_zero(void *data, size_t length)
     }
 }
 
-/** @copydoc crypto_manager_public_key_is_provisioned */
+/**
+ * @brief Check if the public key is provisioned.
+ *
+ * @return true if the public key is provisioned, false otherwise.
+ */
 bool crypto_manager_public_key_is_provisioned(void)
 {
     uint32_t nonzero = 0U;
@@ -47,7 +69,14 @@ bool crypto_manager_public_key_is_provisioned(void)
     return nonzero != 0U;
 }
 
-/** @copydoc crypto_manager_verify_digest_signature */
+/**
+ * @brief Verify a digest signature using the provisioned public key.
+ *
+ * @param[in] digest Pointer to the digest to verify.
+ * @param[in] signature Pointer to the signature to verify.
+ *
+ * @return true if the signature is valid, false otherwise.
+ */
 bool crypto_manager_verify_digest_signature(const uint8_t *digest,
                                             const uint8_t *signature)
 {
@@ -59,7 +88,17 @@ bool crypto_manager_verify_digest_signature(const uint8_t *digest,
     return ecdsa_p256_verify_digest(secure_boot_public_key, digest, signature) == 0;
 }
 
-/** @copydoc crypto_manager_build_signed_manifest */
+/**
+ * @brief Build a signed manifest.
+ *
+ * @param[in] image_size Size of the image in bytes.
+ * @param[in] image_version Version of the image.
+ * @param[in] image_sha256 Pointer to the SHA-256 hash of the image.
+ * @param[in] signature Pointer to the signature.
+ * @param[out] manifest Pointer to the manifest to populate.
+ *
+ * @return true if the manifest is built successfully, false otherwise.
+ */
 bool crypto_manager_build_signed_manifest(uint32_t image_size,
                                           uint32_t image_version,
                                           const uint8_t *image_sha256,

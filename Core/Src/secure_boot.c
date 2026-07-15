@@ -163,7 +163,7 @@ uint32_t secure_boot_slot_max_image_size(void)
 const secure_boot_manifest_t *secure_boot_manifest_for_slot(secure_boot_slot_t slot)
 {
     uint32_t base = secure_boot_slot_base(slot);
-
+    // get address of the manifest at the end of the slot, or NULL if the slot is invalid
     if (base == 0U) {
         return NULL;
     }
@@ -195,19 +195,21 @@ static bool secure_boot_vector_table_is_valid(uint32_t vector_base,
     uint32_t initial_msp = vectors[0];
     uint32_t reset_handler = vectors[1];
     uint32_t reset_address = reset_handler & ~1UL;
-
+    //check main stack pointer is in RAM and reset handler is a valid Thumb address in the image
     if (initial_msp < BOOT_RAM_BASE || initial_msp > BOOT_RAM_END) {
         secure_boot_log_vector_reject("initial_msp", vector_base, image_size,
                                       initial_msp, reset_handler,
                                       reset_address);
         return false;
     }
+    //check reset handler is a valid Thumb address in the image
     if ((reset_handler & 1UL) == 0U) {
         secure_boot_log_vector_reject("reset_handler_thumb", vector_base,
                                       image_size, initial_msp, reset_handler,
                                       reset_address);
         return false;
     }
+    //check reset handler is in the image range
     if (reset_address < linked_image_base ||
         reset_address >= linked_image_base + image_size) {
         secure_boot_log_vector_reject("reset_handler_range", vector_base,
@@ -219,7 +221,14 @@ static bool secure_boot_vector_table_is_valid(uint32_t vector_base,
     return true;
 }
 
-/** @copydoc secure_boot_verify_slot */
+/** @brief Verify a slot as a runtime image.
+ *
+ * @param[in] storage_slot Slot containing the stored image.
+ * @param[in] runtime_slot Slot to verify against.
+ * @param[out] manifest_out Pointer to store the verified manifest, or NULL.
+ *
+ * @return SECURE_BOOT_SUCCESS if the slot is valid, otherwise an error code.
+ */
 static secure_boot_result_t secure_boot_verify_slot_as_runtime(
     secure_boot_slot_t storage_slot, secure_boot_slot_t runtime_slot,
     const secure_boot_manifest_t **manifest_out)
@@ -233,21 +242,24 @@ static secure_boot_result_t secure_boot_verify_slot_as_runtime(
     if (manifest_out != NULL) {
         *manifest_out = NULL;
     }
-
+    // slot must be valid application slot and not NONE
     if (!secure_boot_slot_is_valid(storage_slot) ||
         !secure_boot_slot_is_valid(runtime_slot)) {
         return SECURE_BOOT_ERROR_ARGUMENT;
     }
-
+    // get addresses of the storage and runtime slots, and the manifest for the storage slot
     storage_base = secure_boot_slot_base(storage_slot);
     runtime_base = secure_boot_slot_base(runtime_slot);
+    // get the manifest for the storage slot, and check that it is valid
     manifest = secure_boot_manifest_for_slot(storage_slot);
+    // check magic code
     if (manifest->magic != SECURE_BOOT_MANIFEST_MAGIC) {
         secure_boot_log_manifest_u32("magic", manifest->magic,
                                      SECURE_BOOT_MANIFEST_MAGIC);
         log_print("SB verify failed: manifest header\r\n");
         return SECURE_BOOT_ERROR_MANIFEST;
     }
+    // check format version, signed size, and image size
     if (manifest->format_version != SECURE_BOOT_MANIFEST_VERSION) {
         secure_boot_log_manifest_u32("format_version",
                                      manifest->format_version,
@@ -255,6 +267,7 @@ static secure_boot_result_t secure_boot_verify_slot_as_runtime(
         log_print("SB verify failed: manifest header\r\n");
         return SECURE_BOOT_ERROR_MANIFEST;
     }
+    // check that the signed size is correct and that the image size is within bounds
     if (manifest->signed_size != offsetof(secure_boot_manifest_t, signature)) {
         secure_boot_log_manifest_u32(
             "signed_size", manifest->signed_size,
@@ -262,13 +275,14 @@ static secure_boot_result_t secure_boot_verify_slot_as_runtime(
         log_print("SB verify failed: manifest header\r\n");
         return SECURE_BOOT_ERROR_MANIFEST;
     }
+    // check that the image size is within bounds
     if (manifest->image_size < 8U ||
         manifest->image_size > secure_boot_slot_max_image_size()) {
         secure_boot_log_manifest_size(manifest->image_size);
         log_print("SB verify failed: manifest header\r\n");
         return SECURE_BOOT_ERROR_MANIFEST;
     }
-
+    // check that the vector table is valid for this MCU and the linked image base
     if (!secure_boot_vector_table_is_valid(storage_base, runtime_base,
                                            manifest->image_size)) {
         log_print("SB verify failed: vector table\r\n");
@@ -276,13 +290,14 @@ static secure_boot_result_t secure_boot_verify_slot_as_runtime(
     }
 
     sha256_compute((const void *)storage_base, manifest->image_size, image_digest);
+    // sha256 of the manifest header (excluding the signature) for signature verification
     if (!crypto_manager_constant_time_equal(image_digest, manifest->image_sha256,
                                             sizeof(image_digest))) {
         crypto_manager_secure_zero(image_digest, sizeof(image_digest));
         log_print("SB verify failed: image hash field=image_sha256\r\n");
         return SECURE_BOOT_ERROR_HASH;
     }
-
+    // check public key is provisioned before verifying the manifest signature
     if (!crypto_manager_public_key_is_provisioned()) {
         crypto_manager_secure_zero(image_digest, sizeof(image_digest));
         log_print("SB verify failed: public key field=secure_boot_public_key\r\n");
@@ -290,6 +305,7 @@ static secure_boot_result_t secure_boot_verify_slot_as_runtime(
     }
 
     sha256_compute(manifest, manifest->signed_size, manifest_digest);
+    // verify the manifest signature using the provisioned public key
     if (!crypto_manager_verify_digest_signature(manifest_digest,
                                                 manifest->signature)) {
         crypto_manager_secure_zero(image_digest, sizeof(image_digest));
@@ -306,9 +322,18 @@ static secure_boot_result_t secure_boot_verify_slot_as_runtime(
     return SECURE_BOOT_OK;
 }
 
-/** @copydoc secure_boot_verify_slot */
-secure_boot_result_t secure_boot_verify_slot(secure_boot_slot_t slot,
-                                             const secure_boot_manifest_t **manifest_out)
+/**
+ * @brief Verify a slot as a runtime image.
+ *
+ * @param[in] storage_slot Slot containing the stored image.
+ * @param[in] runtime_slot Slot to verify against.
+ * @param[out] manifest_out Pointer to store the verified manifest, or NULL.
+ *
+ * @return SECURE_BOOT_SUCCESS if the slot is valid, otherwise an error code.
+ */
+secure_boot_result_t secure_boot_verify_slot(secure_boot_slot_t storage_slot,
+                                                       secure_boot_slot_t runtime_slot,
+                                                       const secure_boot_manifest_t **manifest_out)
 {
     return secure_boot_verify_slot_as_runtime(slot, slot, manifest_out);
 }
@@ -443,7 +468,18 @@ static secure_boot_result_t secure_boot_commit_status(secure_boot_status_t *stat
                : SECURE_BOOT_ERROR_FLASH;
 }
 
-/** @copydoc secure_boot_recover_interrupted_update */
+/**
+ * @brief Recover from an interrupted update by clearing the update marker.
+ *
+ * @details
+ * If the update state is not idle, the update marker is cleared and the status
+ * record is committed to Flash. If the update state is committing and the
+ * update slot is the staging slot, the staged image is published first.
+ *
+ * @return @ref SECURE_BOOT_OK when no recovery was needed or recovery succeeded.
+ * @return Any error returned by @ref secure_boot_publish_staged_update or
+ *         @ref secure_boot_commit_status.
+ */
 secure_boot_result_t secure_boot_recover_interrupted_update(void)
 {
     secure_boot_status_t status;
@@ -469,7 +505,17 @@ secure_boot_result_t secure_boot_recover_interrupted_update(void)
     return secure_boot_commit_status(&status, source);
 }
 
-/** @copydoc secure_boot_begin_update */
+/**
+ * @brief Check whether a vector table matches the runtime slot.
+ *
+ * @param[in] staging_slot Slot containing the stored image.
+ * @param[in] vector_base Absolute Flash address of the stored vector table.
+ * @param[in] image_size Signed application image size in bytes.
+ * @param[in] runtime_base Runtime base address the image was linked for.
+ *
+ * @return true when the vector table is plausible for this MCU layout.
+ * @return false when MSP or reset handler validation fails.
+ */
 secure_boot_result_t secure_boot_begin_update(secure_boot_slot_t slot)
 {
     secure_boot_status_t status;
@@ -488,7 +534,17 @@ secure_boot_result_t secure_boot_begin_update(secure_boot_slot_t slot)
     return secure_boot_commit_status(&status, source);
 }
 
-/** @copydoc secure_boot_mark_update_committing */
+/**
+ * @brief Check whether a vector table matches the runtime slot.
+ *
+ * @param[in] staging_slot Slot containing the stored image.
+ * @param[in] vector_base Absolute Flash address of the stored vector table.
+ * @param[in] image_size Signed application image size in bytes.
+ * @param[in] runtime_base Runtime base address the image was linked for.
+ *
+ * @return true when the vector table is plausible for this MCU layout.
+ * @return false when MSP or reset handler validation fails.
+ */
 secure_boot_result_t secure_boot_mark_update_committing(secure_boot_slot_t slot)
 {
     secure_boot_status_t status;
@@ -506,7 +562,17 @@ secure_boot_result_t secure_boot_mark_update_committing(secure_boot_slot_t slot)
     return secure_boot_commit_status(&status, source);
 }
 
-/** @copydoc secure_boot_abort_update */
+/**
+ * @brief Check whether a vector table matches the runtime slot.
+ *
+ * @param[in] staging_slot Slot containing the stored image.
+ * @param[in] vector_base Absolute Flash address of the stored vector table.
+ * @param[in] image_size Signed application image size in bytes.
+ * @param[in] runtime_base Runtime base address the image was linked for.
+ *
+ * @return true when the vector table is plausible for this MCU layout.
+ * @return false when MSP or reset handler validation fails.
+ */
 secure_boot_result_t secure_boot_abort_update(void)
 {
     secure_boot_status_t status;
@@ -578,7 +644,15 @@ static secure_boot_result_t secure_boot_verify_staged_slot(
     return SECURE_BOOT_OK;
 }
 
-/** @copydoc secure_boot_publish_staged_update */
+/**
+ * @brief Publish a staged update to the runtime slot.
+ *
+ * @param[in] staging_slot Slot containing the staged image.
+ *
+ * @return @ref SECURE_BOOT_OK when the update is published successfully.
+ * @return Any error returned by @ref secure_boot_verify_staged_slot or
+ *         @ref secure_boot_commit_status.
+ */
 secure_boot_result_t secure_boot_publish_staged_update(
     secure_boot_slot_t staging_slot)
 {
@@ -621,7 +695,15 @@ secure_boot_result_t secure_boot_publish_staged_update(
     return secure_boot_commit_status(&status, source);
 }
 
-/** @copydoc secure_boot_request_trial */
+/**
+ * @brief Start a trial boot of a slot.
+ *
+ * @param[in] slot Slot to trial boot. Must be the runtime slot.
+ *
+ * @return @ref SECURE_BOOT_OK when the trial is started successfully.
+ * @return Any error returned by @ref secure_boot_verify_acceptable_slot or
+ *         @ref secure_boot_commit_status.
+ */
 secure_boot_result_t secure_boot_request_trial(secure_boot_slot_t slot)
 {
     secure_boot_status_t status;
@@ -647,7 +729,15 @@ secure_boot_result_t secure_boot_request_trial(secure_boot_slot_t slot)
     return secure_boot_commit_status(&status, source);
 }
 
-/** @copydoc secure_boot_confirm_running_image */
+/**
+ * @brief Confirm that the currently running image is valid.
+ *
+ * @param[in] slot Slot to confirm. Must be the runtime slot.
+ *
+ * @return @ref SECURE_BOOT_OK when the running image is confirmed successfully.
+ * @return Any error returned by @ref secure_boot_verify_acceptable_slot or
+ *         @ref secure_boot_commit_status.
+ */
 secure_boot_result_t secure_boot_confirm_running_image(secure_boot_slot_t slot)
 {
     secure_boot_status_t status;
@@ -672,7 +762,15 @@ secure_boot_result_t secure_boot_confirm_running_image(secure_boot_slot_t slot)
     return secure_boot_commit_status(&status, source);
 }
 
-/** @copydoc secure_boot_select_update_slot */
+/**
+ * @brief Select a slot for receiving a new image.
+ *
+ * @param[out] selected_slot Pointer to store the selected slot. Must not be NULL.
+ *
+ * @return @ref SECURE_BOOT_OK when the staging slot is selected successfully.
+ * @return @ref SECURE_BOOT_ERROR_ARGUMENT when the output pointer is NULL.
+ * @return @ref SECURE_BOOT_ERROR_STATE when an update is already in progress.
+ */
 secure_boot_result_t secure_boot_select_update_slot(
     secure_boot_slot_t *selected_slot)
 {
@@ -712,7 +810,20 @@ static void secure_boot_jump_to_image(secure_boot_slot_t slot)
     boot_platform_jump_to_image(secure_boot_slot_base(slot));
 }
 
-/** @copydoc secure_boot_boot */
+/**
+ * @brief Perform secure boot verification and jump to the runtime image.
+ *
+ * @details
+ * If a staged update is being committed, it is published first. The runtime
+ * slot is verified against the minimum version, and if valid, the status is
+ * updated to reflect that the runtime slot is active and confirmed. Finally,
+ * execution jumps to the runtime image.
+ *
+ * @return @ref SECURE_BOOT_OK when the jump was successful (does not return).
+ * @return Any error returned by @ref secure_boot_publish_staged_update,
+ *         @ref secure_boot_verify_acceptable_slot, or
+ *         @ref secure_boot_commit_status.
+ */
 secure_boot_result_t secure_boot_boot(void)
 {
     secure_boot_status_t status;
